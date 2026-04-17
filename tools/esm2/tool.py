@@ -1,8 +1,8 @@
 
 import os
-import json
+import argparse
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any
 from core.base_tool import BaseTool
 
 logger = logging.getLogger(__name__)
@@ -13,6 +13,14 @@ class ESM2(BaseTool):
     Outputs: sequence score/fitness
     """
     
+    @classmethod
+    def get_cli_parser(cls) -> argparse.ArgumentParser:
+        parser = super().get_cli_parser()
+        parser.add_argument("--sequence", type=str, help="Input protein sequence")
+        parser.add_argument("--fasta_path", type=str, help="Input FASTA file path")
+        parser.add_argument("--output_dir", type=str, help="Output directory for results")
+        return parser
+
     def run(self, input_params: Dict[str, Any]) -> Dict[str, Any]:
         logger.info("Running ESM2 Sequence Scoring")
         

@@ -16,40 +16,55 @@
   - `task_manager.py`: 任务管理（Slurm/Local）
   - `sequence.py`: 序列与突变处理
   - `structure.py`: 结构与多链管理（继承自 Sequence）
-  - `base_tool.py`: 工具基类，定义标准 I/O 范式
-- `tools/`: 具体工具实现（如 ProteinMPNN, AF3, Chai-1 等）
+  - `base_tool.py`: 工具基类，定义标准 I/O 范式，支持 CLI 解析和动态传参
+- `tools/`: 具体工具实现（如 ProteinMPNN, AF3, Chai-1, ESM2, DLKcat, Pythia, TMalign 等）
 - `protocols/`: 流程化协议示例
 - `data/`: 配置文件与示例数据
 
 ## 快速开始
 
-### 1. CLI 调用方式
+所有的工具都可以通过以下三种方式进行调用：
+
+### 方式 1: 直接使用工具的 Python 脚本 (CLI 参数)
+每个工具内部都封装了 `argparse`，允许你直接从命令行传递参数，而无需编写 JSON 文件。
 
 ```bash
-python main.py proteinmpnn --config tools/proteinmpnn/config.json
+python tools/proteinmpnn/tool.py --mode scoring --pdb_path ./example.pdb --mutations "A12G" --exec_mode local
 ```
 
-### 2. Python API 调用方式
+### 方式 2: 通过统一的 main.py 和 JSON 配置文件
+适用于固定流程和复杂参数组合。
+
+```bash
+python main.py proteinmpnn --config data/default_configs/proteinmpnn.json
+```
+
+### 方式 3: Python API 调用 (Import)
+支持直接实例化类，并在实例化或调用时动态传入参数，非常适合集成到更大的 Python 流程中。
 
 ```python
 from tools.proteinmpnn.tool import ProteinMPNN
 
-tool = ProteinMPNN()
-results = tool.run({
-    "mode": "design",
-    "pdb_path": "example.pdb",
-    "num_seqs": 5,
-    "exec_mode": "slurm"
-})
+# 初始化时可以指定环境、工作目录等配置
+tool = ProteinMPNN(exec_mode="slurm")
+
+# 调用时动态传入运行参数
+results = tool(
+    mode="design",
+    pdb_path="example.pdb",
+    num_seqs=5
+)
 print(results)
 ```
 
 ## 扩展新工具
 
-1. 在 `tools/` 下创建新文件夹。
-2. 继承 `BaseTool` 类并实现 `run` 方法。
-3. 定义该工具的标准 JSON 输入格式。
-4. 在 `main.py` 中注册新工具。
+1. 在 `tools/` 下创建新文件夹（如 `mytool/tool.py`）。
+2. 继承 `BaseTool` 类。
+3. 重写 `get_cli_parser` 方法，添加该工具特有的命令行参数。
+4. 实现 `run` 方法，处理 `input_params` 字典并返回结果字典。
+5. 在文件末尾添加 `if __name__ == "__main__": MyTool.cli()`。
+6. 在 `main.py` 的字典中注册新工具。
 
 ## 任务管理说明
 

@@ -1,8 +1,8 @@
 
 import os
-import json
+import argparse
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any
 from core.base_tool import BaseTool
 
 logger = logging.getLogger(__name__)
@@ -14,6 +14,14 @@ class TMalign(BaseTool):
     Outputs: TM-score (normalized by both seqs), alignment sequence, resSeq correspondence
     """
     
+    @classmethod
+    def get_cli_parser(cls) -> argparse.ArgumentParser:
+        parser = super().get_cli_parser()
+        parser.add_argument("--reference_pdb", type=str, required=True, help="Reference PDB file path")
+        parser.add_argument("--target_pdb", type=str, required=True, help="Target PDB file path")
+        parser.add_argument("--output_dir", type=str, help="Output directory")
+        return parser
+
     def run(self, input_params: Dict[str, Any]) -> Dict[str, Any]:
         logger.info("Running TMalign Structure Alignment")
         
@@ -26,7 +34,6 @@ class TMalign(BaseTool):
         output_dir = input_params.get("output_dir", os.path.join(self.config["work_dir"], "tmalign_output"))
         os.makedirs(output_dir, exist_ok=True)
         
-        # TMalign is usually a C++ binary
         binary_path = self.config.get("binary_path", "TMalign")
         
         output_prefix = os.path.join(output_dir, "align")
@@ -40,24 +47,17 @@ class TMalign(BaseTool):
         job_id = self.execute(cmd, job_name="tmalign")
         
         # Mock Results
-        # In a real implementation, we would parse the TMalign stdout and output files
-        # to extract the alignment sequences and residue correspondence.
         return {
             "tool": "TMalign",
             "job_id": job_id,
             "output_dir": output_dir,
-            "tm_score_ref": 0.85, # Normalized by reference length
-            "tm_score_target": 0.82, # Normalized by target length
+            "tm_score_ref": 0.85, 
+            "tm_score_target": 0.82, 
             "rmsd": 1.2,
             "alignment": {
                 "ref_seq":    "MAT-S--N",
                 "target_seq": "MATGSKDN"
             },
-            "residue_mapping": [
-                {"ref_resSeq": 1, "target_resSeq": 1, "dist": 0.5},
-                {"ref_resSeq": 2, "target_resSeq": 2, "dist": 0.4},
-                # ...
-            ],
             "status": "success"
         }
 

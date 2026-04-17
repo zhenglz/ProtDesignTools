@@ -1,8 +1,8 @@
 
 import os
-import json
+import argparse
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any
 from core.base_tool import BaseTool
 
 logger = logging.getLogger(__name__)
@@ -12,7 +12,15 @@ class Pythia(BaseTool):
     Pythia for thermal stability (ddG) prediction.
     Outputs: ddG energy score
     """
-    
+
+    @classmethod
+    def get_cli_parser(cls) -> argparse.ArgumentParser:
+        parser = super().get_cli_parser()
+        parser.add_argument("--pdb_path", type=str, required=True, help="Path to input PDB file")
+        parser.add_argument("--mutations", type=str, required=True, help="Mutations to evaluate (e.g. A12G)")
+        parser.add_argument("--output_dir", type=str, help="Output directory")
+        return parser
+
     def run(self, input_params: Dict[str, Any]) -> Dict[str, Any]:
         logger.info("Running Pythia ddG Prediction")
         

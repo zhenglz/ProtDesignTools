@@ -1,8 +1,8 @@
 
 import os
-import json
+import argparse
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any
 from core.base_tool import BaseTool
 
 logger = logging.getLogger(__name__)
@@ -13,7 +13,15 @@ class DLKcat(BaseTool):
     Inputs: Enzyme sequence, Substrate SMILES
     Outputs: Predicted kcat value
     """
-    
+
+    @classmethod
+    def get_cli_parser(cls) -> argparse.ArgumentParser:
+        parser = super().get_cli_parser()
+        parser.add_argument("--sequence", type=str, required=True, help="Enzyme amino acid sequence")
+        parser.add_argument("--smiles", type=str, required=True, help="Substrate SMILES string")
+        parser.add_argument("--output_dir", type=str, help="Output directory")
+        return parser
+
     def run(self, input_params: Dict[str, Any]) -> Dict[str, Any]:
         logger.info("Running DLKcat Prediction")
         
