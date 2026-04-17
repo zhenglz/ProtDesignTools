@@ -8,19 +8,30 @@ import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from tools.proteinmpnn.tool import ProteinMPNN
-# Import other tools as they are implemented
+from tools.chai1.tool import Chai1
+from tools.esm2.tool import ESM2
+from tools.dlkcat.tool import DLKcat
+from tools.tmalign.tool import TMalign
+from tools.pythia.tool import Pythia
+from tools.autodock_vina.tool import AutoDockVina
+from tools.openmm.tool import OpenMMSimulation
 
 def main():
     parser = argparse.ArgumentParser(description="ProtDesignTools: A Modular Protein Design Toolkit")
-    parser.add_argument("tool", type=str, help="Tool name to run (e.g., proteinmpnn)")
+    parser.add_argument("tool", type=str, help="Tool name to run (e.g., proteinmpnn, chai1, esm2, dlkcat, tmalign, pythia, vina, openmm)")
     parser.add_argument("--config", type=str, required=True, help="Path to JSON config file")
     
     args = parser.parse_args()
     
     tool_map = {
         "proteinmpnn": ProteinMPNN,
-        # "af3": AlphaFold3,
-        # "chai1": Chai1,
+        "chai1": Chai1,
+        "esm2": ESM2,
+        "dlkcat": DLKcat,
+        "tmalign": TMalign,
+        "pythia": Pythia,
+        "vina": AutoDockVina,
+        "openmm": OpenMMSimulation
     }
     
     if args.tool.lower() not in tool_map:

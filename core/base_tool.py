@@ -15,12 +15,23 @@ class BaseTool(ABC):
     """
     
     def __init__(self, config_path: Optional[str] = None):
-        self.config: Dict[str, Any] = {}
+        self.config: Dict[str, Any] = {
+            "python_env": "",
+            "script_path": "",
+            "binary_path": "",
+            "work_dir": "./work_dir",
+            "exec_mode": "local",  # local or slurm
+            "slurm_params": {}
+        }
+        
+        # Override default config with user provided config
         if config_path and os.path.exists(config_path):
             with open(config_path, 'r') as f:
-                self.config = json.load(f)
+                user_config = json.load(f)
+                self.config.update(user_config)
         
         self.tool_name = self.__class__.__name__
+        os.makedirs(self.config["work_dir"], exist_ok=True)
 
     @abstractmethod
     def run(self, input_params: Dict[str, Any]) -> Dict[str, Any]:
@@ -36,22 +47,46 @@ class BaseTool(ABC):
         with open(json_path, 'r') as f:
             params = json.load(f)
         
-        results = self.run(params)
+        # Merge class-level config with runtime params
+        # This allows params to override tool defaults (like exec_mode)
+        runtime_config = self.config.copy()
+        runtime_config.update(params)
         
-        output_json = params.get("output_json", "output.json")
+        results = self.run(runtime_config)
+        
+        output_json = runtime_config.get("output_json", os.path.join(self.config["work_dir"], f"{self.tool_name}_output.json"))
         with open(output_json, 'w') as f:
             json.dump(results, f, indent=4)
         
         return output_json
 
-    def execute(self, command: str, mode: str = "local", job_name: Optional[str] = None, **kwargs) -> Any:
+    def build_command(self, script_or_bin: str, args: List[str]) -> str:
+        """Helper to build execution command with appropriate python environment"""
+        cmd_parts = []
+        if self.config.get("python_env"):
+            # Assuming conda or virtualenv is activated via this path
+            cmd_parts.append(f"source activate {self.config['python_env']} && python")
+        elif script_or_bin.endswith(".py"):
+            cmd_parts.append("python")
+            
+        cmd_parts.append(script_or_bin)
+        cmd_parts.extend(args)
+        return " ".join(cmd_parts)
+
+    def execute(self, command: str, job_name: Optional[str] = None, **kwargs) -> Any:
         """
         Execute a command using the TaskManager.
         Useful for tools that call external binaries or scripts.
         """
         job_name = job_name or f"{self.tool_name}_job"
-        manager = get_manager(mode, **kwargs)
-        job_id = manager.submit(command, job_name, **kwargs)
+        mode = self.config.get("exec_mode", "local")
+        
+        # Slurm parameters
+        slurm_kwargs = self.config.get("slurm_params", {})
+        slurm_kwargs.update(kwargs)
+        
+        manager = get_manager(mode, work_dir=self.config["work_dir"], **slurm_kwargs)
+        job_id = manager.submit(command, job_name, **slurm_kwargs)
         
         # If running synchronously
         if kwargs.get("wait", True):
