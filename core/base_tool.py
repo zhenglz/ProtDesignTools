@@ -117,7 +117,9 @@ class BaseTool(ABC):
         job_name = job_name or f"{self.tool_name}_job"
         mode = self.get_exec_mode()
         
-        slurm_kwargs = self.config.get("slurm_params", {})
+        # Setup Slurm params by merging global defaults with tool-specific params and runtime kwargs
+        slurm_kwargs = global_config.get("default_slurm_params", {}).copy()
+        slurm_kwargs.update(self.config.get("slurm_params", {}))
         slurm_kwargs.update(kwargs)
         
         manager = get_manager(mode, work_dir=self.work_dir, **slurm_kwargs)

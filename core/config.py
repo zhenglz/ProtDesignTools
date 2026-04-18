@@ -14,9 +14,14 @@ class GlobalConfig:
             cls._instance = super(GlobalConfig, cls).__new__(cls)
             cls._instance.config = {
                 "global_work_dir": "./work_dir",
-                "global_exec_mode": "local", # can be overridden by specific tools
-                "default_slurm_partition": "AMD"
+                "global_exec_mode": "local",
+                "default_slurm_params": {}
             }
+            
+            # Auto-load the default global config from data/global_config.json if it exists
+            default_config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "global_config.json")
+            cls._instance.load_from_file(default_config_path)
+            
         return cls._instance
 
     def update(self, config_dict: Dict[str, Any]):

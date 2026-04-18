@@ -66,8 +66,23 @@ print(results)
 5. 在文件末尾添加 `if __name__ == "__main__": MyTool.cli()`。
 6. 在 `main.py` 的字典中注册新工具。
 
-## 任务管理说明
+## 任务管理与全局配置
 
+项目包含一个全局配置文件 `data/global_config.json`，控制所有工具的默认行为：
+```json
+{
+    "global_work_dir": "./work_dir",
+    "global_exec_mode": "local",
+    "default_slurm_params": {
+        "partition": "AMD",
+        "nodes": 1,
+        "ntasks": 1,
+        "cpus_per_task": 4
+    }
+}
+```
+- **工作目录机制**：每个工具的最终输出目录默认由 `global_work_dir` + `tool_work_dir` (如 `proteinmpnn`) 拼接而成。
+- **参数继承**：工具专有的 Slurm 配置会覆盖全局的 `default_slurm_params`，而命令行的临时参数又会覆盖工具的配置。
 - **本地模式**：使用 `subprocess` 管理进程。
 - **Slurm 模式**：自动生成 `.sh` 脚本，提交并追踪状态（PENDING -> RUNNING -> COMPLETED/FAILED）。
 
