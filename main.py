@@ -27,9 +27,9 @@ def main():
     
     # Tool Execution
     parser.add_argument("tool", type=str, help="Tool name to run (e.g., proteinmpnn, chai1, esm2, dlkcat, tmalign, pythia, vina, openmm)")
-    parser.add_argument("--config", type=str, required=True, help="Path to tool-specific JSON config file")
+    parser.add_argument("--config", type=str, help="Optional: Path to tool-specific JSON config file (overrides global defaults)")
     
-    args = parser.parse_args()
+    args, unknown = parser.parse_known_args()
     
     # Setup Global Config
     if args.global_config:
@@ -38,6 +38,21 @@ def main():
         global_config.update({"global_work_dir": args.global_work_dir})
     if args.global_exec_mode:
         global_config.update({"global_exec_mode": args.global_exec_mode})
+    
+    # Parse remaining dynamic parameters
+    input_params = {}
+    i = 0
+    while i < len(unknown):
+        if unknown[i].startswith("--"):
+            key = unknown[i][2:]
+            if i + 1 < len(unknown) and not unknown[i+1].startswith("--"):
+                input_params[key] = unknown[i+1]
+                i += 2
+            else:
+                input_params[key] = True
+                i += 1
+        else:
+            i += 1
     
     # Registry of available tools
     tool_map = {
@@ -56,11 +71,11 @@ def main():
         sys.exit(1)
         
     tool_class = tool_map[args.tool.lower()]
-    tool_instance = tool_class()
+    tool_instance = tool_class(config_path=args.config)
     
-    print(f"Running {args.tool} with config {args.config} in work_dir {tool_instance.work_dir}...")
-    output_path = tool_instance.run_with_json(args.config)
-    print(f"Done. Results saved to {output_path}")
+    print(f"Running {args.tool} in work_dir {tool_instance.work_dir}...")
+    output_path = tool_instance(output_json=None, **input_params)
+    print(f"Done. Results:\n{json.dumps(output_path, indent=4)}")
 
 if __name__ == "__main__":
     main()

@@ -25,7 +25,7 @@ class BaseTool(ABC):
         """
         self.tool_name = self.__class__.__name__
         
-        # Default tool-specific config
+        # Default tool-specific config (can be overridden by global tools section)
         self.config: Dict[str, Any] = {
             "python_env": "",
             "script_path": "",
@@ -35,13 +35,18 @@ class BaseTool(ABC):
             "slurm_params": {}
         }
         
-        # 1. Load from config file if provided
+        # 1. Load tool specific defaults from the global config
+        global_tools_config = global_config.get("tools", {})
+        if self.tool_name in global_tools_config:
+            self.config.update(global_tools_config[self.tool_name])
+        
+        # 2. Load from specific config file if provided (overrides global)
         if config_path and os.path.exists(config_path):
             with open(config_path, 'r') as f:
                 user_config = json.load(f)
                 self.config.update(user_config)
                 
-        # 2. Override with explicit kwargs
+        # 3. Override with explicit kwargs (highest priority)
         self.config.update(kwargs)
         
         # Determine actual working directory by combining global and tool-specific

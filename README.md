@@ -26,17 +26,17 @@
 所有的工具都可以通过以下三种方式进行调用：
 
 ### 方式 1: 直接使用工具的 Python 脚本 (CLI 参数)
-每个工具内部都封装了 `argparse`，允许你直接从命令行传递参数，而无需编写 JSON 文件。
+每个工具内部都封装了 `argparse`，允许你直接从命令行传递参数。工具会自动读取 `data/global_config.json` 中的环境配置。
 
 ```bash
 python tools/proteinmpnn/tool.py --mode scoring --pdb_path ./example.pdb --mutations "A12G" --exec_mode local
 ```
 
-### 方式 2: 通过统一的 main.py 和 JSON 配置文件
-适用于固定流程和复杂参数组合。
+### 方式 2: 通过统一的 main.py
+由于所有工具配置都在 `global_config.json` 中集中管理，你可以直接调用 `main.py` 运行工具（无需额外指定 config 文件）：
 
 ```bash
-python main.py proteinmpnn --config data/default_configs/proteinmpnn.json
+python main.py proteinmpnn --mode design --pdb_path ./example.pdb --num_seqs 5
 ```
 
 ### 方式 3: Python API 调用 (Import)
@@ -78,9 +78,26 @@ print(results)
         "nodes": 1,
         "ntasks": 1,
         "cpus_per_task": 4
+    },
+    "tools": {
+        "ProteinMPNN": {
+            "python_env": "proteinmpnn_env",
+            "script_path": "/home/bjtc/apps/ProteinMPNN/protein_mpnn_run.py",
+            "slurm_params": {}
+        },
+        "Chai1": {
+            "python_env": "chai_env",
+            "script_path": "/home/bjtc/apps/Chai1/run_inference.py",
+            "slurm_params": {
+                "partition": "GPU",
+                "gres": "gpu:1",
+                "cpus_per_task": 8
+            }
+        }
     }
 }
 ```
+- **工具配置继承**：`global_config.json` 的 `tools` 字段中统一定义了所有工具的环境和执行脚本。工具初始化时会自动读取属于自己的配置。
 - **工作目录机制**：每个工具的最终输出目录默认由 `global_work_dir` + `tool_work_dir` (如 `proteinmpnn`) 拼接而成。
 - **参数继承**：工具专有的 Slurm 配置会覆盖全局的 `default_slurm_params`，而命令行的临时参数又会覆盖工具的配置。
 - **本地模式**：使用 `subprocess` 管理进程。
