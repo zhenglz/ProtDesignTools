@@ -7,7 +7,7 @@ import glob
 import numpy as np
 import shutil
 from typing import Dict, Any, List, Optional
-from core.base_tool import BaseTool
+from protdesigntools.core.base_tool import BaseTool
 
 # We might need BioPython for CIF to PDB conversion
 try:
@@ -30,24 +30,49 @@ class Chai1(BaseTool):
     @classmethod
     def get_cli_parser(cls) -> argparse.ArgumentParser:
         parser = super().get_cli_parser()
+        parser.add_argument("--pdb_path", type=str, help="Input PDB file to extract sequences from")
         parser.add_argument("--fasta_path", type=str, help="Input FASTA file containing sequences")
         parser.add_argument("--sequence", type=str, help="Single protein sequence string")
         parser.add_argument("--ligand", type=str, help="Optional ligand SMILES for complex prediction")
+        parser.add_argument("--target_dna_seq", type=str, help="Target DNA sequence to replace DNA chains in PDB")
         parser.add_argument("--output_dir", type=str, help="Output directory")
         return parser
 
     def _prepare_fasta(self, input_params: Dict[str, Any], temp_dir: str) -> str:
         """Prepare the input FASTA file for Chai-1."""
+        fasta_out = os.path.join(temp_dir, "input.fasta")
+        
         if input_params.get("fasta_path") and os.path.exists(input_params["fasta_path"]):
-            fasta_out = os.path.join(temp_dir, "input.fasta")
             shutil.copy(input_params["fasta_path"], fasta_out)
             return fasta_out
             
+        pdb_path = input_params.get("pdb_path")
+        target_dna_seq = input_params.get("target_dna_seq")
+        
+        if pdb_path and os.path.exists(pdb_path):
+            # Parse chains from PDB and generate multi-chain fasta
+            struct = Structure(pdb_path)
+            
+            with open(fasta_out, "w") as f:
+                # Naive heuristic: if sequence contains only ATCG, consider it DNA
+                for chain_id, seq in struct.chains.items():
+                    is_dna = set(seq).issubset({'A', 'T', 'C', 'G', 'N', 'U'})
+                    
+                    if is_dna and target_dna_seq:
+                        # Simple replacement logic
+                        f.write(f">DNA|{chain_id}\n{target_dna_seq}\n")
+                        # For a full implementation, we'd handle complementary strands properly
+                    elif is_dna:
+                        f.write(f">DNA|{chain_id}\n{seq}\n")
+                    else:
+                        f.write(f">protein|{chain_id}\n{seq}\n")
+                        
+            return fasta_out
+
         seq_str = input_params.get("sequence")
         if not seq_str:
-            raise ValueError("Chai-1 requires either fasta_path or sequence.")
+            raise ValueError("Chai-1 requires either fasta_path, sequence, or pdb_path.")
             
-        fasta_out = os.path.join(temp_dir, "input.fasta")
         with open(fasta_out, "w") as f:
             f.write(f">protein|protein\n{seq_str}\n")
             

@@ -3,7 +3,7 @@ import os
 import json
 import logging
 from typing import Dict, Any, List
-from core.base_tool import BaseTool
+from protdesigntools.core.base_tool import BaseTool
 
 logger = logging.getLogger(__name__)
 

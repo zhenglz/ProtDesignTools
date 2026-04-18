@@ -5,10 +5,10 @@ import logging
 import argparse
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, Union, List
-from core.task_manager import get_manager, TaskManager
-from core.sequence import Sequence
-from core.structure import Structure
-from core.config import config as global_config
+from protdesigntools.core.task_manager import get_manager, TaskManager
+from protdesigntools.core.sequence import Sequence
+from protdesigntools.core.structure import Structure
+from protdesigntools.core.config import config as global_config
 
 logger = logging.getLogger(__name__)
 

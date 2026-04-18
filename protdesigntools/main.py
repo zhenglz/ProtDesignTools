@@ -7,15 +7,15 @@ import os
 # Add current directory to path so core and tools can be imported
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from core.config import config as global_config
-from tools.proteinmpnn.tool import ProteinMPNN
-from tools.chai1.tool import Chai1
-from tools.esm2.tool import ESM2
-from tools.dlkcat.tool import DLKcat
-from tools.tmalign.tool import TMalign
-from tools.pythia.tool import Pythia
-from tools.autodock_vina.tool import AutoDockVina
-from tools.openmm.tool import OpenMMSimulation
+from protdesigntools.core.config import config as global_config
+from protdesigntools.tools.proteinmpnn.tool import ProteinMPNN
+from protdesigntools.tools.chai1.tool import Chai1
+from protdesigntools.tools.esm2.tool import ESM2
+from protdesigntools.tools.dlkcat.tool import DLKcat
+from protdesigntools.tools.tmalign.tool import TMalign
+from protdesigntools.tools.pythia.tool import Pythia
+from protdesigntools.tools.autodock_vina.tool import AutoDockVina
+from protdesigntools.tools.openmm.tool import OpenMMSimulation
 
 def main():
     parser = argparse.ArgumentParser(description="ProtDesignTools: A Modular Protein Design Toolkit")
@@ -63,7 +63,8 @@ def main():
         "tmalign": TMalign,
         "pythia": Pythia,
         "vina": AutoDockVina,
-        "openmm": OpenMMSimulation
+        "openmm": OpenMMSimulation,
+        "rfdiffusion": RFDiffusion
     }
     
     if args.tool.lower() not in tool_map:

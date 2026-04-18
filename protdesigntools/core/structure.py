@@ -1,7 +1,7 @@
 
 import os
 from typing import Dict, List, Optional, Any
-from core.sequence import Sequence
+from protdesigntools.core.sequence import Sequence
 import numpy as np
 
 class Structure(Sequence):

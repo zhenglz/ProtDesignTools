@@ -8,9 +8,9 @@ import shutil
 import glob
 import numpy as np
 from typing import Dict, Any, List, Optional
-from core.base_tool import BaseTool
-from core.structure import Structure
-from core.sequence import Sequence
+from protdesigntools.core.base_tool import BaseTool
+from protdesigntools.core.structure import Structure
+from protdesigntools.core.sequence import Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,13 @@ class ProteinMPNN(BaseTool):
         parser.add_argument("--sequence", type=str, help="Input sequence string for scoring")
         
         # Design specific
-        parser.add_argument("--design_chains", type=str, help="Comma-separated list of chains to design (e.g. A,B)")
+        parser.add_argument("--model_type", type=str, choices=["protein_mpnn", "ligand_mpnn", "soluble_mpnn", "global_mpnn"], default="protein_mpnn", help="Type of MPNN model to use")
+        parser.add_argument("--design_chains", type=str, help="Comma-separated list of chains to design (e.g. A,B) (Alias for --chains_to_design in ligand_mpnn)")
+        parser.add_argument("--redesigned_residues", type=str, help="Specific residues to redesign (e.g. 'A12 A13 B2')")
+        parser.add_argument("--pack_side_chains", type=int, choices=[0, 1], help="Whether to pack side chains (1 for yes, 0 for no)")
+        parser.add_argument("--pack_with_ligand_context", type=int, choices=[0, 1], help="Pack side chains with ligand context")
+        
+        # Legacy/Advanced positional controls for classic ProteinMPNN
         parser.add_argument("--fixed_positions", type=str, help="JSON string mapping chain to list of fixed 1-based indices (e.g. '{\"A\": [1, 2, 3]}')")
         parser.add_argument("--omit_AAs", type=str, help="String of amino acids to omit globally (e.g. 'CX')")
         parser.add_argument("--omit_AA_per_pos", type=str, help="JSON string mapping chain to dict of pos: omit_AAs (e.g. '{\"A\": {\"1\": \"C\", \"2\": \"FWY\"}}')")
@@ -293,38 +299,73 @@ class ProteinMPNN(BaseTool):
 
             elif mode == "design":
                 logger.info("Running ProteinMPNN in DESIGN mode")
-                jsonls = self._prepare_design_jsonls(input_params, temp_dir)
                 
+                model_type = input_params.get("model_type", "protein_mpnn")
                 num_seqs = input_params.get("num_seqs", 1)
                 temp = input_params.get("sampling_temp", 0.1)
-                omit_AAs = input_params.get("omit_AAs")
                 
-                args = [
-                    "--jsonl_path", jsonls["parsed"],
-                    "--out_folder", temp_dir,
-                    "--num_seq_per_target", str(num_seqs),
-                    "--sampling_temp", str(temp),
-                    "--batch_size", "1"
-                ]
-                
-                if jsonls["assigned"]:
-                    args.extend(["--chain_id_jsonl", jsonls["assigned"]])
-                if jsonls["fixed"]:
-                    args.extend(["--fixed_positions_jsonl", jsonls["fixed"]])
-                if jsonls["omit_aa_pos"]:
-                    args.extend(["--omit_AA_jsonl", jsonls["omit_aa_pos"]])
-                if jsonls["bias_aa_pos"]:
-                    args.extend(["--bias_AA_jsonl", jsonls["bias_aa_pos"]])
-                if jsonls["tied"]:
-                    args.extend(["--tied_positions_jsonl", jsonls["tied"]])
-                if omit_AAs:
-                    args.extend(["--omit_AAs", omit_AAs])
+                if model_type == "ligand_mpnn":
+                    # LigandMPNN (run.py) has different CLI arguments from classic protein_mpnn_run.py
+                    pdb_path = input_params.get("pdb_path")
+                    if not pdb_path:
+                        raise ValueError("ligand_mpnn requires a pdb_path")
+                        
+                    args = [
+                        "--model_type", "ligand_mpnn",
+                        "--pdb_path", pdb_path,
+                        "--out_folder", temp_dir,
+                        "--number_of_packs_per_design", str(num_seqs),
+                        "--temperature", str(temp)
+                    ]
+                    
+                    if input_params.get("design_chains"):
+                        args.extend(["--chains_to_design", input_params["design_chains"]])
+                        
+                    if input_params.get("pack_side_chains") is not None:
+                        args.extend(["--pack_side_chains", str(input_params["pack_side_chains"])])
+                        
+                    if input_params.get("pack_with_ligand_context") is not None:
+                        args.extend(["--pack_with_ligand_context", str(input_params["pack_with_ligand_context"])])
+                        
+                    if input_params.get("redesigned_residues"):
+                        args.extend(["--redesigned_residues", input_params["redesigned_residues"]])
+                        
+                else:
+                    # Classic ProteinMPNN
+                    jsonls = self._prepare_design_jsonls(input_params, temp_dir)
+                    omit_AAs = input_params.get("omit_AAs")
+                    
+                    args = [
+                        "--jsonl_path", jsonls["parsed"],
+                        "--out_folder", temp_dir,
+                        "--num_seq_per_target", str(num_seqs),
+                        "--sampling_temp", str(temp),
+                        "--batch_size", "1"
+                    ]
+                    
+                    if jsonls["assigned"]:
+                        args.extend(["--chain_id_jsonl", jsonls["assigned"]])
+                    if jsonls["fixed"]:
+                        args.extend(["--fixed_positions_jsonl", jsonls["fixed"]])
+                    if jsonls["omit_aa_pos"]:
+                        args.extend(["--omit_AA_jsonl", jsonls["omit_aa_pos"]])
+                    if jsonls["bias_aa_pos"]:
+                        args.extend(["--bias_AA_jsonl", jsonls["bias_aa_pos"]])
+                    if jsonls["tied"]:
+                        args.extend(["--tied_positions_jsonl", jsonls["tied"]])
+                    if omit_AAs:
+                        args.extend(["--omit_AAs", omit_AAs])
                     
                 cmd = self.build_command(script_path, args)
                 self.execute(cmd, job_name="mpnn_design")
                 
-                # Parse the .fa output
-                parsed_seqs = self._parse_design_output(temp_dir)
+                # Parse the .fa output (Note: LigandMPNN outputs .fasta in seqs/ and packed pdbs in packed/)
+                # Let's handle both outputs gracefully
+                parsed_seqs = []
+                try:
+                    parsed_seqs = self._parse_design_output(temp_dir)
+                except Exception as e:
+                    logger.warning(f"Could not parse FASTA output: {e}. Trying to find generated PDBs instead.")
                 
                 # Copy the generated FASTA to the final output_dir
                 output_dir = input_params.get("output_dir", os.path.join(self.work_dir, "output"))

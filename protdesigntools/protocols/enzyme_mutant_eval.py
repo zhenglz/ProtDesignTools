@@ -3,8 +3,8 @@ import os
 import json
 import logging
 from typing import Dict, Any, List
-from core.structure import Structure
-from tools.proteinmpnn.tool import ProteinMPNN
+from protdesigntools.core.structure import Structure
+from protdesigntools.tools.proteinmpnn.tool import ProteinMPNN
 
 # Mocking other tools for the protocol example
 class MockAF3:
