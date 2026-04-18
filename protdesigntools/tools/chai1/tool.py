@@ -188,8 +188,9 @@ class Chai1(BaseTool):
     def run(self, input_params: Dict[str, Any]) -> Dict[str, Any]:
         logger.info("Running Chai-1 Structure Prediction")
         
-        output_dir = input_params.get("output_dir", os.path.join(self.work_dir, "output"))
-        os.makedirs(output_dir, exist_ok=True)
+        if "output_dir" in input_params:
+            self.output_dir = input_params["output_dir"]
+            os.makedirs(self.output_dir, exist_ok=True)
         
         script_path = self.config.get("script_path", "run_chai1.py")
         
@@ -212,11 +213,11 @@ class Chai1(BaseTool):
             job_id = self.execute(cmd, job_name="chai1_pred")
             
             # Parse outputs
-            parsed_data = self._parse_chai_output(temp_dir, output_dir)
+            parsed_data = self._parse_chai_output(temp_dir, self.output_dir)
             
             results.update(parsed_data)
             results["job_id"] = job_id
-            results["output_dir"] = output_dir
+            results["output_dir"] = self.output_dir
             results["status"] = "success"
 
         return results

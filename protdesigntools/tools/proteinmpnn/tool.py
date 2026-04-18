@@ -264,6 +264,11 @@ class ProteinMPNN(BaseTool):
         mode = input_params.get("mode", "design")
         script_path = self.config.get("script_path", "protein_mpnn_run.py")
         
+        # Override output_dir if explicitly provided in input_params
+        if "output_dir" in input_params:
+            self.output_dir = input_params["output_dir"]
+            os.makedirs(self.output_dir, exist_ok=True)
+            
         results = {
             "tool": "ProteinMPNN",
             "mode": mode,
@@ -368,20 +373,18 @@ class ProteinMPNN(BaseTool):
                     logger.warning(f"Could not parse FASTA output: {e}. Trying to find generated PDBs instead.")
                 
                 # Copy the generated FASTA to the final output_dir
-                output_dir = input_params.get("output_dir", os.path.join(self.work_dir, "output"))
-                os.makedirs(output_dir, exist_ok=True)
-                
                 seqs_dir = os.path.join(temp_dir, "seqs")
                 fasta_files = glob.glob(os.path.join(seqs_dir, "*.fa"))
                 final_fasta = ""
                 if fasta_files:
-                    final_fasta = os.path.join(output_dir, os.path.basename(fasta_files[0]))
+                    final_fasta = os.path.join(self.output_dir, os.path.basename(fasta_files[0]))
                     shutil.copy(fasta_files[0], final_fasta)
                 
                 results["sequences"] = parsed_seqs
                 if final_fasta:
                     results["output_fasta"] = final_fasta
                 results["input_pdb"] = input_params.get("pdb_path")
+                results["output_dir"] = self.output_dir
                 results["status"] = "success"
 
             else:

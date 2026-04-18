@@ -68,8 +68,9 @@ class RFDiffusion(BaseTool):
     def run(self, input_params: Dict[str, Any]) -> Dict[str, Any]:
         logger.info("Running RFDiffusion (RFD3) Design")
         
-        output_dir = input_params.get("output_dir", os.path.join(self.work_dir, "output"))
-        os.makedirs(output_dir, exist_ok=True)
+        if "output_dir" in input_params:
+            self.output_dir = input_params["output_dir"]
+            os.makedirs(self.output_dir, exist_ok=True)
         
         # We assume script_path is actually the source_rfd3.sh script
         source_script = self.config.get("script_path", "source_rfd3.sh")
@@ -83,8 +84,6 @@ class RFDiffusion(BaseTool):
             json_path = self._prepare_inference_json(input_params, temp_dir)
             num_designs = input_params.get("num_designs", 1)
             
-            # The command from zDBProd runs `source script.sh && rfd3 design out_dir=... inputs=...`
-            # Since this is a chained command, we build it directly
             cmd = f"source {source_script} && rfd3 design out_dir={os.path.abspath(temp_dir)} inputs={os.path.abspath(json_path)}"
             if num_designs > 1:
                 cmd += f" inference.num_designs={num_designs}"
@@ -99,13 +98,13 @@ class RFDiffusion(BaseTool):
                 
             output_files = []
             for gf in generated_files:
-                dest = os.path.join(output_dir, os.path.basename(gf))
+                dest = os.path.join(self.output_dir, os.path.basename(gf))
                 shutil.copy(gf, dest)
                 output_files.append(dest)
                 
             results["generated_files"] = output_files
             results["job_id"] = job_id
-            results["output_dir"] = output_dir
+            results["output_dir"] = self.output_dir
             results["status"] = "success"
 
         return results

@@ -26,27 +26,31 @@
 所有的工具都可以通过以下三种方式进行调用：
 
 ### 方式 1: 直接使用工具的 Python 脚本 (CLI 参数)
-每个工具内部都封装了 `argparse`，允许你直接从命令行传递参数。工具会自动读取 `data/global_config.json` 中的环境配置。
+每个工具内部都封装了 `argparse`，允许你直接从命令行传递参数。你可以通过 `--global_config` 指定一个不同于默认位置的全局配置文件。
 
 ```bash
-python tools/proteinmpnn/tool.py --mode scoring --pdb_path ./example.pdb --mutations "A12G" --exec_mode local
+python protdesigntools/tools/proteinmpnn/tool.py --global_config ./data/global_config.json --mode scoring --pdb_path ./example.pdb --mutations "A12G"
 ```
 
 ### 方式 2: 通过统一的 main.py
-由于所有工具配置都在 `global_config.json` 中集中管理，你可以直接调用 `main.py` 运行工具（无需额外指定 config 文件）：
-
 ```bash
-python main.py proteinmpnn --mode design --pdb_path ./example.pdb --num_seqs 5
+protdesign proteinmpnn --mode design --pdb_path ./example.pdb --num_seqs 5
 ```
 
 ### 方式 3: Python API 调用 (Import)
-支持直接实例化类，并在实例化或调用时动态传入参数，非常适合集成到更大的 Python 流程中。
+支持直接实例化类，并在实例化或调用时动态传入参数，非常适合集成到更大的 Python 流程中。你可以通过 `global_config_path` 指定配置文件，并且实例将拥有一个可访问的 `self.output_dir` 属性。
 
 ```python
-from tools.proteinmpnn.tool import ProteinMPNN
+from protdesigntools.tools.proteinmpnn.tool import ProteinMPNN
 
-# 初始化时可以指定环境、工作目录等配置
-tool = ProteinMPNN(exec_mode="slurm")
+# 初始化时可以指定全局配置和环境
+tool = ProteinMPNN(
+    global_config_path="./data/global_config.json", 
+    exec_mode="slurm"
+)
+
+# 打印分配给该工具的默认输出目录
+print(f"Results will be saved to: {tool.output_dir}")
 
 # 调用时动态传入运行参数
 results = tool(

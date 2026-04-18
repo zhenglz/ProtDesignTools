@@ -18,13 +18,17 @@ class BaseTool(ABC):
     Supports both functional call (import) and script call (CLI).
     """
     
-    def __init__(self, config_path: Optional[str] = None, **kwargs):
+    def __init__(self, config_path: Optional[str] = None, global_config_path: Optional[str] = None, **kwargs):
         """
         Initialize the tool. 
         Configurations can be loaded from a JSON file or passed directly via kwargs.
         """
         self.tool_name = self.__class__.__name__
         
+        # 0. Update global config if explicitly provided
+        if global_config_path and os.path.exists(global_config_path):
+            global_config.load_from_file(global_config_path)
+            
         # Default tool-specific config (can be overridden by global tools section)
         self.config: Dict[str, Any] = {
             "python_env": "",
@@ -51,7 +55,12 @@ class BaseTool(ABC):
         
         # Determine actual working directory by combining global and tool-specific
         self.work_dir = self._resolve_work_dir()
+        
+        # Determine the default output directory for the tool results
+        self.output_dir = kwargs.get("output_dir", os.path.join(self.work_dir, "output"))
+        
         os.makedirs(self.work_dir, exist_ok=True)
+        os.makedirs(self.output_dir, exist_ok=True)
 
     def _resolve_work_dir(self) -> str:
         """Resolve the final working directory by combining global_work_dir and tool_work_dir."""
@@ -140,8 +149,10 @@ class BaseTool(ABC):
         Returns a base ArgumentParser for the tool.
         """
         parser = argparse.ArgumentParser(description=f"Run {cls.__name__} Tool")
+        parser.add_argument("--global_config", type=str, help="Path to global JSON config file")
         parser.add_argument("--config", type=str, help="Path to input JSON config (optional)")
         parser.add_argument("--tool_work_dir", type=str, help="Subdirectory name for this tool's outputs")
+        parser.add_argument("--output_dir", type=str, help="Specific output directory (overrides default nested path)")
         parser.add_argument("--exec_mode", type=str, choices=["local", "slurm"], help="Execution mode (overrides global)")
         parser.add_argument("--output_json", type=str, help="Path to save output JSON")
         return parser
@@ -155,9 +166,10 @@ class BaseTool(ABC):
         kwargs = {k: v for k, v in vars(args).items() if v is not None}
         
         config_path = kwargs.pop("config", None)
+        global_config_path = kwargs.pop("global_config", None)
         output_json = kwargs.pop("output_json", None)
         
-        tool = cls(config_path=config_path, **kwargs)
+        tool = cls(config_path=config_path, global_config_path=global_config_path, **kwargs)
         
         input_params = {}
         i = 0
