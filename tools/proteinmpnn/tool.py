@@ -42,7 +42,10 @@ class ProteinMPNN(BaseTool):
         # Design specific
         parser.add_argument("--design_chains", type=str, help="Comma-separated list of chains to design (e.g. A,B)")
         parser.add_argument("--fixed_positions", type=str, help="JSON string mapping chain to list of fixed 1-based indices (e.g. '{\"A\": [1, 2, 3]}')")
-        parser.add_argument("--omit_AAs", type=str, help="String of amino acids to omit (e.g. 'CX')")
+        parser.add_argument("--omit_AAs", type=str, help="String of amino acids to omit globally (e.g. 'CX')")
+        parser.add_argument("--omit_AA_per_pos", type=str, help="JSON string mapping chain to dict of pos: omit_AAs (e.g. '{\"A\": {\"1\": \"C\", \"2\": \"FWY\"}}')")
+        parser.add_argument("--bias_AA_per_pos", type=str, help="JSON string mapping chain to dict of pos: dict of AA: bias (e.g. '{\"A\": {\"1\": {\"A\": 10.0}}}')")
+        parser.add_argument("--tied_positions", type=str, help="JSON string for symmetric design. e.g. '{\"A\": [1,2], \"B\": [1,2]}'")
         parser.add_argument("--num_seqs", type=int, default=1, help="Number of sequences to design")
         parser.add_argument("--sampling_temp", type=float, default=0.1, help="Sampling temperature")
         
@@ -122,10 +125,40 @@ class ProteinMPNN(BaseTool):
             with open(fixed_jsonl, "w") as f:
                 f.write(json.dumps({base_name: fixed_dict}) + "\n")
                 
+        # 4. Omit AA per position
+        omit_aa_jsonl = ""
+        omit_aa_pos_str = input_params.get("omit_AA_per_pos")
+        if omit_aa_pos_str:
+            omit_aa_jsonl = os.path.join(temp_dir, "omit_AA.jsonl")
+            omit_aa_dict = json.loads(omit_aa_pos_str)
+            with open(omit_aa_jsonl, "w") as f:
+                f.write(json.dumps({base_name: omit_aa_dict}) + "\n")
+                
+        # 5. Bias AA per position
+        bias_aa_jsonl = ""
+        bias_aa_pos_str = input_params.get("bias_AA_per_pos")
+        if bias_aa_pos_str:
+            bias_aa_jsonl = os.path.join(temp_dir, "bias_AA.jsonl")
+            bias_aa_dict = json.loads(bias_aa_pos_str)
+            with open(bias_aa_jsonl, "w") as f:
+                f.write(json.dumps({base_name: bias_aa_dict}) + "\n")
+                
+        # 6. Tied positions (Symmetric design)
+        tied_jsonl = ""
+        tied_pos_str = input_params.get("tied_positions")
+        if tied_pos_str:
+            tied_jsonl = os.path.join(temp_dir, "tied_pdbs.jsonl")
+            tied_dict = json.loads(tied_pos_str)
+            with open(tied_jsonl, "w") as f:
+                f.write(json.dumps({base_name: tied_dict}) + "\n")
+                
         return {
             "parsed": parsed_jsonl,
             "assigned": assigned_jsonl,
-            "fixed": fixed_jsonl
+            "fixed": fixed_jsonl,
+            "omit_aa_pos": omit_aa_jsonl,
+            "bias_aa_pos": bias_aa_jsonl,
+            "tied": tied_jsonl
         }
 
     def _parse_scoring_output(self, temp_dir: str) -> float:
@@ -278,6 +311,12 @@ class ProteinMPNN(BaseTool):
                     args.extend(["--chain_id_jsonl", jsonls["assigned"]])
                 if jsonls["fixed"]:
                     args.extend(["--fixed_positions_jsonl", jsonls["fixed"]])
+                if jsonls["omit_aa_pos"]:
+                    args.extend(["--omit_AA_jsonl", jsonls["omit_aa_pos"]])
+                if jsonls["bias_aa_pos"]:
+                    args.extend(["--bias_AA_jsonl", jsonls["bias_aa_pos"]])
+                if jsonls["tied"]:
+                    args.extend(["--tied_positions_jsonl", jsonls["tied"]])
                 if omit_AAs:
                     args.extend(["--omit_AAs", omit_AAs])
                     
