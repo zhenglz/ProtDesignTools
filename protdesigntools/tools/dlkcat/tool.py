@@ -31,8 +31,11 @@ class DLKcat(BaseTool):
         if not sequence or not smiles:
             raise ValueError("Both enzyme sequence and substrate smiles must be provided.")
             
-        output_dir = input_params.get("output_dir", os.path.join(self.work_dir, "output"))
-        os.makedirs(output_dir, exist_ok=True)
+        if "output_dir" in input_params:
+            self.output_dir = input_params["output_dir"]
+            os.makedirs(self.output_dir, exist_ok=True)
+            
+        output_dir = self.output_dir
         
         script_path = self.config.get("script_path", "run_dlkcat.py")
         

@@ -31,8 +31,11 @@ class TMalign(BaseTool):
         if not ref_pdb or not target_pdb:
             raise ValueError("Both reference_pdb and target_pdb must be provided.")
             
-        output_dir = input_params.get("output_dir", os.path.join(self.work_dir, "output"))
-        os.makedirs(output_dir, exist_ok=True)
+        if "output_dir" in input_params:
+            self.output_dir = input_params["output_dir"]
+            os.makedirs(self.output_dir, exist_ok=True)
+            
+        output_dir = self.output_dir
         
         binary_path = self.config.get("binary_path", "TMalign")
         

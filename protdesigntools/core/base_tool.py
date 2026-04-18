@@ -53,23 +53,9 @@ class BaseTool(ABC):
         # 3. Override with explicit kwargs (highest priority)
         self.config.update(kwargs)
         
-        # Determine actual working directory by combining global and tool-specific
-        self.work_dir = self._resolve_work_dir()
-        
-        # Determine the default output directory for the tool results
-        self.output_dir = kwargs.get("output_dir", os.path.join(self.work_dir, "output"))
-        
-        os.makedirs(self.work_dir, exist_ok=True)
+        # Determine the output directory for the tool results
+        self.output_dir = kwargs.get("output_dir", self.config.get("output_dir", f"./{self.tool_name.lower()}_output"))
         os.makedirs(self.output_dir, exist_ok=True)
-
-    def _resolve_work_dir(self) -> str:
-        """Resolve the final working directory by combining global_work_dir and tool_work_dir."""
-        global_dir = global_config.global_work_dir
-        tool_dir = self.config.get("tool_work_dir", self.tool_name.lower())
-        
-        if os.path.isabs(tool_dir):
-            return tool_dir
-        return os.path.join(global_dir, tool_dir)
 
     def get_exec_mode(self) -> str:
         """Get the execution mode (local or slurm), falling back to global config if not set locally."""
@@ -104,7 +90,7 @@ class BaseTool(ABC):
         
         results = self.run(runtime_config)
         
-        output_json = runtime_config.get("output_json", os.path.join(self.work_dir, f"{self.tool_name}_output.json"))
+        output_json = kwargs.pop("output_json", os.path.join(self.output_dir, f"{self.tool_name}_output.json"))
         with open(output_json, 'w') as f:
             json.dump(results, f, indent=4)
         
@@ -136,7 +122,7 @@ class BaseTool(ABC):
         slurm_kwargs.update(self.config.get("slurm_params", {}))
         slurm_kwargs.update(kwargs)
         
-        manager = get_manager(mode, work_dir=self.work_dir, **slurm_kwargs)
+        manager = get_manager(mode, work_dir=self.output_dir, **slurm_kwargs)
         job_id = manager.submit(command, job_name, **slurm_kwargs)
         
         if kwargs.get("wait", True):

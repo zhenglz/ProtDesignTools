@@ -275,7 +275,7 @@ class ProteinMPNN(BaseTool):
             "status": "failed"
         }
         
-        with tempfile.TemporaryDirectory(dir=self.work_dir, prefix="mpnn_tmp_") as temp_dir:
+        with tempfile.TemporaryDirectory(dir=self.output_dir, prefix="mpnn_tmp_") as temp_dir:
             
             if mode == "scoring":
                 logger.info("Running ProteinMPNN in SCORING mode")

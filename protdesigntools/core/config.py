@@ -13,7 +13,6 @@ class GlobalConfig:
         if cls._instance is None:
             cls._instance = super(GlobalConfig, cls).__new__(cls)
             cls._instance.config = {
-                "global_work_dir": "./work_dir",
                 "global_exec_mode": "local",
                 "default_slurm_params": {}
             }
@@ -36,10 +35,6 @@ class GlobalConfig:
 
     def get(self, key: str, default: Any = None) -> Any:
         return self.config.get(key, default)
-
-    @property
-    def global_work_dir(self) -> str:
-        return self.config["global_work_dir"]
 
     @property
     def global_exec_mode(self) -> str:

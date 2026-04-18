@@ -80,7 +80,7 @@ class RFDiffusion(BaseTool):
             "status": "failed"
         }
         
-        with tempfile.TemporaryDirectory(dir=self.work_dir, prefix="rfd_tmp_") as temp_dir:
+        with tempfile.TemporaryDirectory(dir=self.output_dir, prefix="rfd_tmp_") as temp_dir:
             json_path = self._prepare_inference_json(input_params, temp_dir)
             num_designs = input_params.get("num_designs", 1)
             

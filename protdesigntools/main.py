@@ -22,7 +22,6 @@ def main():
     
     # Global Configurations
     parser.add_argument("--global_config", type=str, help="Path to global JSON config file")
-    parser.add_argument("--global_work_dir", type=str, help="Global working directory")
     parser.add_argument("--global_exec_mode", type=str, choices=["local", "slurm"], help="Global execution mode")
     
     # Tool Execution
@@ -34,8 +33,6 @@ def main():
     # Setup Global Config
     if args.global_config:
         global_config.load_from_file(args.global_config)
-    if args.global_work_dir:
-        global_config.update({"global_work_dir": args.global_work_dir})
     if args.global_exec_mode:
         global_config.update({"global_exec_mode": args.global_exec_mode})
     

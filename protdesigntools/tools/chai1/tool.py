@@ -199,7 +199,7 @@ class Chai1(BaseTool):
             "status": "failed"
         }
         
-        with tempfile.TemporaryDirectory(dir=self.work_dir, prefix="chai_tmp_") as temp_dir:
+        with tempfile.TemporaryDirectory(dir=self.output_dir, prefix="chai_tmp_") as temp_dir:
             fasta_path = self._prepare_fasta(input_params, temp_dir)
             
             # The Chai-1 CLI usually takes the fasta and output directory
