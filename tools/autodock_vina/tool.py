@@ -29,7 +29,7 @@ class AutoDockVina(BaseTool):
         if not receptor or not ligand:
             raise ValueError("Both receptor and ligand must be provided.")
             
-        output_dir = input_params.get("output_dir", os.path.join(self.config["work_dir"], "docking_output"))
+        output_dir = input_params.get("output_dir", os.path.join(self.work_dir, "output"))
         os.makedirs(output_dir, exist_ok=True)
         
         binary_path = self.config.get("binary_path", "vina")

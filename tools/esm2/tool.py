@@ -30,7 +30,7 @@ class ESM2(BaseTool):
         if not sequence and not fasta_path:
             raise ValueError("Either sequence or fasta_path must be provided.")
             
-        output_dir = input_params.get("output_dir", os.path.join(self.config["work_dir"], "esm2_output"))
+        output_dir = input_params.get("output_dir", os.path.join(self.work_dir, "output"))
         os.makedirs(output_dir, exist_ok=True)
         
         script_path = self.config.get("script_path", "run_esm2_score.py")

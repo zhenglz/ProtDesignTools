@@ -231,7 +231,7 @@ class ProteinMPNN(BaseTool):
             "status": "failed"
         }
         
-        with tempfile.TemporaryDirectory(dir=self.config["work_dir"], prefix="mpnn_tmp_") as temp_dir:
+        with tempfile.TemporaryDirectory(dir=self.work_dir, prefix="mpnn_tmp_") as temp_dir:
             
             if mode == "scoring":
                 logger.info("Running ProteinMPNN in SCORING mode")
@@ -288,7 +288,7 @@ class ProteinMPNN(BaseTool):
                 parsed_seqs = self._parse_design_output(temp_dir)
                 
                 # Copy the generated FASTA to the final output_dir
-                output_dir = input_params.get("output_dir", os.path.join(self.config["work_dir"], "mpnn_output"))
+                output_dir = input_params.get("output_dir", os.path.join(self.work_dir, "output"))
                 os.makedirs(output_dir, exist_ok=True)
                 
                 seqs_dir = os.path.join(temp_dir, "seqs")

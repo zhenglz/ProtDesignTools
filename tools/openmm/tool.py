@@ -22,7 +22,7 @@ class OpenMMSimulation(BaseTool):
         if not pdb_path:
             raise ValueError("pdb_path must be provided.")
             
-        output_dir = input_params.get("output_dir", os.path.join(self.config["work_dir"], "openmm_output"))
+        output_dir = input_params.get("output_dir", os.path.join(self.work_dir, "output"))
         os.makedirs(output_dir, exist_ok=True)
         
         script_path = self.config.get("script_path", "run_openmm.py")

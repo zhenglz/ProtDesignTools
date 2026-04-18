@@ -163,7 +163,7 @@ class Chai1(BaseTool):
     def run(self, input_params: Dict[str, Any]) -> Dict[str, Any]:
         logger.info("Running Chai-1 Structure Prediction")
         
-        output_dir = input_params.get("output_dir", os.path.join(self.config["work_dir"], "chai1_output"))
+        output_dir = input_params.get("output_dir", os.path.join(self.work_dir, "output"))
         os.makedirs(output_dir, exist_ok=True)
         
         script_path = self.config.get("script_path", "run_chai1.py")
@@ -173,7 +173,7 @@ class Chai1(BaseTool):
             "status": "failed"
         }
         
-        with tempfile.TemporaryDirectory(dir=self.config["work_dir"], prefix="chai_tmp_") as temp_dir:
+        with tempfile.TemporaryDirectory(dir=self.work_dir, prefix="chai_tmp_") as temp_dir:
             fasta_path = self._prepare_fasta(input_params, temp_dir)
             
             # The Chai-1 CLI usually takes the fasta and output directory
