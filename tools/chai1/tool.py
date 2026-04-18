@@ -1,57 +1,200 @@
 
 import os
-import json
+import argparse
 import logging
-from typing import Dict, Any, List
+import tempfile
+import glob
+import numpy as np
+import shutil
+from typing import Dict, Any, List, Optional
 from core.base_tool import BaseTool
+
+# We might need BioPython for CIF to PDB conversion
+try:
+    from Bio.PDB.MMCIFParser import MMCIFParser
+    from Bio.PDB.PDBIO import PDBIO
+    from Bio.PDB.PDBParser import PDBParser
+    HAS_BIOPYTHON = True
+except ImportError:
+    HAS_BIOPYTHON = False
 
 logger = logging.getLogger(__name__)
 
 class Chai1(BaseTool):
     """
     Chai-1 for structure prediction.
-    Outputs: PDB format structure, pLDDT, iPTM
+    Inputs: Sequence string(s), FASTA file.
+    Outputs: Predicted PDB structure, pLDDT, iPTM (if complex).
     """
-    
+
+    @classmethod
+    def get_cli_parser(cls) -> argparse.ArgumentParser:
+        parser = super().get_cli_parser()
+        parser.add_argument("--fasta_path", type=str, help="Input FASTA file containing sequences")
+        parser.add_argument("--sequence", type=str, help="Single protein sequence string")
+        parser.add_argument("--ligand", type=str, help="Optional ligand SMILES for complex prediction")
+        parser.add_argument("--output_dir", type=str, help="Output directory")
+        return parser
+
+    def _prepare_fasta(self, input_params: Dict[str, Any], temp_dir: str) -> str:
+        """Prepare the input FASTA file for Chai-1."""
+        if input_params.get("fasta_path") and os.path.exists(input_params["fasta_path"]):
+            fasta_out = os.path.join(temp_dir, "input.fasta")
+            shutil.copy(input_params["fasta_path"], fasta_out)
+            return fasta_out
+            
+        seq_str = input_params.get("sequence")
+        if not seq_str:
+            raise ValueError("Chai-1 requires either fasta_path or sequence.")
+            
+        fasta_out = os.path.join(temp_dir, "input.fasta")
+        with open(fasta_out, "w") as f:
+            f.write(f">protein|protein\n{seq_str}\n")
+            
+            # Chai-1 supports ligands in fasta via special headers
+            ligand = input_params.get("ligand")
+            if ligand:
+                f.write(f">ligand|ligand\n{ligand}\n")
+                
+        return fasta_out
+
+    def _convert_cif_to_pdb(self, cif_path: str, pdb_path: str):
+        """Convert CIF to PDB using BioPython if available."""
+        if not HAS_BIOPYTHON:
+            logger.warning("BioPython not installed. Cannot convert CIF to PDB. Copying CIF instead.")
+            shutil.copy(cif_path, pdb_path)
+            return
+
+        try:
+            parser = MMCIFParser(QUIET=True)
+            structure = parser.get_structure("chai_model", cif_path)
+            io = PDBIO()
+            io.set_structure(structure)
+            io.save(pdb_path)
+        except Exception as e:
+            logger.error(f"Failed to convert CIF to PDB: {e}")
+            shutil.copy(cif_path, pdb_path)
+
+    def _extract_plddt(self, struct_path: str) -> float:
+        """Extract average pLDDT from the B-factor column of CA atoms."""
+        plddt_sum = 0.0
+        count = 0
+        
+        if not os.path.exists(struct_path):
+            return 0.0
+            
+        with open(struct_path, 'r') as f:
+            for line in f:
+                if line.startswith("ATOM") and line[12:16].strip() == "CA":
+                    try:
+                        # B-factor is usually columns 60-66
+                        b_factor = float(line[60:66].strip())
+                        plddt_sum += b_factor
+                        count += 1
+                    except ValueError:
+                        pass
+                        
+        return plddt_sum / count if count > 0 else 0.0
+
+    def _extract_iptm(self, npz_path: str) -> float:
+        """Extract iPTM from Chai-1 scores .npz file."""
+        if not os.path.exists(npz_path):
+            return 0.0
+            
+        try:
+            data = np.load(npz_path, allow_pickle=True)
+            if 'iptm' in data:
+                # iptm might be a scalar or a 0-d array
+                return float(data['iptm'])
+            elif 'ptm' in data: # Fallback to ptm if iptm not present
+                return float(data['ptm'])
+        except Exception as e:
+            logger.error(f"Error reading {npz_path}: {e}")
+            
+        return 0.0
+
+    def _parse_chai_output(self, temp_dir: str, output_dir: str) -> Dict[str, Any]:
+        """Find and parse the best model from Chai-1 outputs."""
+        # Chai-1 usually outputs to a subfolder or directly in the given dir
+        # Look for .cif files
+        cif_files = glob.glob(os.path.join(temp_dir, "*.cif"))
+        if not cif_files:
+            # Check subdirectories
+            cif_files = glob.glob(os.path.join(temp_dir, "*", "*.cif"))
+            
+        if not cif_files:
+            raise RuntimeError(f"No .cif output found in {temp_dir}")
+            
+        # Prioritize model_idx_0 if it exists
+        best_cif = cif_files[0]
+        for f in cif_files:
+            if "model_idx_0" in f:
+                best_cif = f
+                break
+                
+        base_name = os.path.splitext(os.path.basename(best_cif))[0]
+        
+        # Convert to PDB
+        final_pdb = os.path.join(output_dir, f"{base_name}.pdb")
+        self._convert_cif_to_pdb(best_cif, final_pdb)
+        
+        # Calculate pLDDT from the converted PDB (or CIF)
+        plddt = self._extract_plddt(final_pdb if os.path.exists(final_pdb) else best_cif)
+        
+        # Look for corresponding npz file for iPTM
+        npz_files = glob.glob(os.path.join(os.path.dirname(best_cif), "*.npz"))
+        best_npz = None
+        for f in npz_files:
+            if "scores" in f and "model_idx_0" in f:
+                best_npz = f
+                break
+        if not best_npz and npz_files:
+            best_npz = npz_files[0]
+            
+        iptm = self._extract_iptm(best_npz) if best_npz else 0.0
+        
+        return {
+            "predicted_pdb": final_pdb,
+            "plddt": plddt,
+            "iptm": iptm,
+            "combined_score": (plddt / 100.0 + iptm) / 2.0 if iptm > 0 else plddt / 100.0
+        }
+
     def run(self, input_params: Dict[str, Any]) -> Dict[str, Any]:
         logger.info("Running Chai-1 Structure Prediction")
         
-        sequence = input_params.get("sequence")
-        fasta_path = input_params.get("fasta_path")
-        
-        if not sequence and not fasta_path:
-            raise ValueError("Either sequence or fasta_path must be provided.")
-            
         output_dir = input_params.get("output_dir", os.path.join(self.config["work_dir"], "chai1_output"))
         os.makedirs(output_dir, exist_ok=True)
         
-        # Construct the execution command
-        # This assumes chai-1 has a python script entry point
         script_path = self.config.get("script_path", "run_chai1.py")
         
-        args = []
-        if fasta_path:
-            args.extend(["--fasta", fasta_path])
-        else:
-            args.extend(["--sequence", sequence])
-            
-        args.extend(["--output_dir", output_dir])
-        
-        cmd = self.build_command(script_path, args)
-        
-        # Execute via TaskManager
-        job_id = self.execute(cmd, job_name="chai1_pred")
-        
-        # Mock Results
-        return {
+        results = {
             "tool": "Chai-1",
-            "job_id": job_id,
-            "output_dir": output_dir,
-            "predicted_pdb": os.path.join(output_dir, "model_1.pdb"),
-            "plddt": 92.5,
-            "iptm": 0.88,
-            "status": "success"
+            "status": "failed"
         }
+        
+        with tempfile.TemporaryDirectory(dir=self.config["work_dir"], prefix="chai_tmp_") as temp_dir:
+            fasta_path = self._prepare_fasta(input_params, temp_dir)
+            
+            # The Chai-1 CLI usually takes the fasta and output directory
+            args = [
+                fasta_path,
+                temp_dir
+            ]
+            
+            cmd = self.build_command(script_path, args)
+            
+            job_id = self.execute(cmd, job_name="chai1_pred")
+            
+            # Parse outputs
+            parsed_data = self._parse_chai_output(temp_dir, output_dir)
+            
+            results.update(parsed_data)
+            results["job_id"] = job_id
+            results["output_dir"] = output_dir
+            results["status"] = "success"
+
+        return results
 
 if __name__ == "__main__":
     Chai1.cli()
