@@ -9,6 +9,7 @@ import shutil
 from typing import Dict, Any, List, Optional
 from protdesigntools.core.base_tool import BaseTool
 from protdesigntools.core.structure import Structure
+from time import sleep
 
 # We might need BioPython for CIF to PDB conversion
 try:
@@ -205,6 +206,8 @@ class Chai1(BaseTool):
         os.makedirs(temp_dir, exist_ok=True)
         
         fasta_path = self._prepare_fasta(input_params, temp_dir)
+        # sleep 2s
+        sleep(2)
         
         # The Chai-1 CLI usually takes the fasta and output directory
         args = [
