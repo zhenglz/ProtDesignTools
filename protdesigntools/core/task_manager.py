@@ -59,7 +59,7 @@ class TaskManager(ABC):
 class LocalTaskManager(TaskManager):
     """Local task manager using subprocess"""
     
-    def __init__(self, max_jobs: int = 4, work_dir: str = "./work_dir"):
+    def __init__(self, max_jobs: int = 4, work_dir: str = "./work_dir", **kwargs):
         super().__init__(max_jobs, work_dir)
         self.processes: Dict[str, subprocess.Popen] = {}
 
@@ -107,7 +107,7 @@ class LocalTaskManager(TaskManager):
 class SlurmTaskManager(TaskManager):
     """Slurm task manager"""
     
-    def __init__(self, max_jobs: int = 100, work_dir: str = "./work_dir", partition: str = "AMD"):
+    def __init__(self, max_jobs: int = 100, work_dir: str = "./work_dir", partition: str = "AMD", **kwargs):
         super().__init__(max_jobs, work_dir)
         self.partition = partition
 
