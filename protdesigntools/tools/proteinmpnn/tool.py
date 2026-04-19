@@ -42,9 +42,11 @@ class ProteinMPNN(BaseTool):
         # Design specific
         parser.add_argument("--model_type", type=str, choices=["protein_mpnn", "ligand_mpnn", "soluble_mpnn", "global_mpnn"], default="protein_mpnn", help="Type of MPNN model to use")
         parser.add_argument("--design_chains", type=str, help="Comma-separated list of chains to design (e.g. A,B) (Alias for --chains_to_design in ligand_mpnn)")
-        parser.add_argument("--redesigned_residues", type=str, help="Specific residues to redesign (e.g. 'A12 A13 B2')")
+        parser.add_argument("--redesigned_residues", type=str, help="Specific residues to redesign (e.g. 'C20 C19 C24')")
         parser.add_argument("--pack_side_chains", type=int, choices=[0, 1], help="Whether to pack side chains (1 for yes, 0 for no)")
         parser.add_argument("--pack_with_ligand_context", type=int, choices=[0, 1], help="Pack side chains with ligand context")
+        parser.add_argument("--checkpoint_ligand_mpnn", type=str, help="Path to ligand_mpnn checkpoint")
+        parser.add_argument("--checkpoint_path_sc", type=str, help="Path to ligand_mpnn sidechain checkpoint")
         
         # Legacy/Advanced positional controls for classic ProteinMPNN
         parser.add_argument("--fixed_positions", type=str, help="JSON string mapping chain to list of fixed 1-based indices (e.g. '{\"A\": [1, 2, 3]}')")
@@ -318,10 +320,16 @@ class ProteinMPNN(BaseTool):
                     args = [
                         "--model_type", "ligand_mpnn",
                         "--pdb_path", pdb_path,
-                        "--out_folder", temp_dir,
+                        "--out_folder", self.output_dir,
                         "--number_of_packs_per_design", str(num_seqs),
                         "--temperature", str(temp)
                     ]
+                    
+                    if input_params.get("checkpoint_ligand_mpnn"):
+                        args.extend(["--checkpoint_ligand_mpnn", input_params["checkpoint_ligand_mpnn"]])
+                        
+                    if input_params.get("checkpoint_path_sc"):
+                        args.extend(["--checkpoint_path_sc", input_params["checkpoint_path_sc"]])
                     
                     if input_params.get("design_chains"):
                         args.extend(["--chains_to_design", input_params["design_chains"]])
@@ -333,7 +341,11 @@ class ProteinMPNN(BaseTool):
                         args.extend(["--pack_with_ligand_context", str(input_params["pack_with_ligand_context"])])
                         
                     if input_params.get("redesigned_residues"):
-                        args.extend(["--redesigned_residues", input_params["redesigned_residues"]])
+                        args.extend(["--redesigned_residues", f"'{input_params['redesigned_residues']}'"])
+                        
+                    ligand_script = input_params.get("ligand_mpnn_script", self.config.get("ligand_mpnn_script", "/sugon_store/zhengliangzhen/apps/LigandMPNN/run.py"))
+                    ligand_python = input_params.get("ligand_mpnn_python", self.config.get("ligand_mpnn_python", "/sugon_store/zhengliangzhen/apps/LigandMPNN/envs/ligandmpnn/bin/python3.11"))
+                    cmd = f"{ligand_python} {ligand_script} " + " ".join(args)
                         
                 else:
                     # Classic ProteinMPNN
@@ -361,24 +373,38 @@ class ProteinMPNN(BaseTool):
                     if omit_AAs:
                         args.extend(["--omit_AAs", omit_AAs])
                     
-                cmd = self.build_command(script_path, args)
+                    cmd = self.build_command(script_path, args)
+                    
                 self.execute(cmd, job_name="mpnn_design")
                 
-                # Parse the .fa output (Note: LigandMPNN outputs .fasta in seqs/ and packed pdbs in packed/)
-                # Let's handle both outputs gracefully
+                # Parse the .fa output
                 parsed_seqs = []
-                try:
-                    parsed_seqs = self._parse_design_output(temp_dir)
-                except Exception as e:
-                    logger.warning(f"Could not parse FASTA output: {e}. Trying to find generated PDBs instead.")
-                
-                # Copy the generated FASTA to the final output_dir
-                seqs_dir = os.path.join(temp_dir, "seqs")
-                fasta_files = glob.glob(os.path.join(seqs_dir, "*.fa"))
                 final_fasta = ""
-                if fasta_files:
-                    final_fasta = os.path.join(self.output_dir, os.path.basename(fasta_files[0]))
-                    shutil.copy(fasta_files[0], final_fasta)
+                
+                if model_type == "ligand_mpnn":
+                    # LigandMPNN outputs directly to self.output_dir/seqs and self.output_dir/packed
+                    seqs_dir = os.path.join(self.output_dir, "seqs")
+                    if os.path.exists(seqs_dir):
+                        try:
+                            parsed_seqs = self._parse_design_output(self.output_dir)
+                        except Exception as e:
+                            logger.warning(f"Could not parse FASTA output for ligand_mpnn: {e}")
+                        fasta_files = glob.glob(os.path.join(seqs_dir, "*.fa"))
+                        if fasta_files:
+                            final_fasta = fasta_files[0]
+                else:
+                    # Classic MPNN outputs to temp_dir, we need to copy to self.output_dir
+                    try:
+                        parsed_seqs = self._parse_design_output(temp_dir)
+                    except Exception as e:
+                        logger.warning(f"Could not parse FASTA output: {e}. Trying to find generated PDBs instead.")
+                    
+                    # Copy the generated FASTA to the final output_dir
+                    seqs_dir = os.path.join(temp_dir, "seqs")
+                    fasta_files = glob.glob(os.path.join(seqs_dir, "*.fa"))
+                    if fasta_files:
+                        final_fasta = os.path.join(self.output_dir, os.path.basename(fasta_files[0]))
+                        shutil.copy(fasta_files[0], final_fasta)
                 
                 results["sequences"] = parsed_seqs
                 if final_fasta:

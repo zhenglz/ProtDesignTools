@@ -27,10 +27,11 @@ class RFDiffusion(BaseTool):
         parser.add_argument("--length", type=str, help="Length constraint (e.g., '50-100')")
         parser.add_argument("--fixed_atoms", type=str, help="JSON dict of fixed atoms")
         parser.add_argument("--num_designs", type=int, default=1, help="Number of designs to generate")
+        parser.add_argument("--job_key", type=str, default="dsDNA_protein_design", help="JSON key for the job (e.g. dsDNA_protein_design)")
         parser.add_argument("--output_dir", type=str, help="Output directory")
         return parser
 
-    def _prepare_inference_json(self, input_params: Dict[str, Any], temp_dir: str) -> str:
+    def _prepare_inference_json(self, input_params: Dict[str, Any], output_dir: str) -> str:
         pdb_path = input_params.get("pdb_path")
         contig = input_params.get("contig")
         length = input_params.get("length", "")
@@ -38,18 +39,20 @@ class RFDiffusion(BaseTool):
         
         fixed_atoms = {}
         if fixed_atoms_str:
-            fixed_atoms = json.loads(fixed_atoms_str)
+            if isinstance(fixed_atoms_str, str):
+                fixed_atoms = json.loads(fixed_atoms_str)
+            elif isinstance(fixed_atoms_str, dict):
+                fixed_atoms = fixed_atoms_str
             
-        # Fallback to auto-detect if no contig is provided (stub for Structure method)
+        # Fallback to auto-detect if no contig is provided
         if not contig:
-            # Here you would typically call a helper to detect gaps in the PDB
-            # For now we'll just set a generic contig for unconditional generation or 
-            # assume the user provides it.
             logger.warning("No contig provided. Generating unconditional scaffold of length 100.")
             contig = "100"
             
+        job_key = input_params.get("job_key", "dsDNA_protein_design")
+            
         json_data = {
-            "rfd3_design_task": {
+            job_key: {
                 "input": os.path.abspath(pdb_path),
                 "contig": contig,
                 "length": length,
@@ -59,7 +62,7 @@ class RFDiffusion(BaseTool):
             }
         }
         
-        json_path = os.path.join(temp_dir, "inference.json")
+        json_path = os.path.join(output_dir, "inference.json")
         with open(json_path, 'w') as f:
             json.dump(json_data, f, indent=2)
             
@@ -70,42 +73,35 @@ class RFDiffusion(BaseTool):
         
         if "output_dir" in input_params:
             self.output_dir = input_params["output_dir"]
-            os.makedirs(self.output_dir, exist_ok=True)
+        os.makedirs(self.output_dir, exist_ok=True)
         
         # We assume script_path is actually the source_rfd3.sh script
-        source_script = self.config.get("script_path", "source_rfd3.sh")
+        source_script = self.config.get("script_path", "/sugon_store/zhengliangzhen/apps/RFDiffusion3/source_rfd3.sh")
         
         results = {
             "tool": "RFDiffusion",
             "status": "failed"
         }
         
-        with tempfile.TemporaryDirectory(dir=self.output_dir, prefix="rfd_tmp_") as temp_dir:
-            json_path = self._prepare_inference_json(input_params, temp_dir)
-            num_designs = input_params.get("num_designs", 1)
+        json_path = self._prepare_inference_json(input_params, self.output_dir)
+        num_designs = input_params.get("num_designs", 1)
+        
+        cmd = f"source {source_script} && rfd3 design out_dir={os.path.abspath(self.output_dir)} inputs={os.path.abspath(json_path)}"
+        if num_designs > 1:
+            cmd += f" inference.num_designs={num_designs}"
             
-            cmd = f"source {source_script} && rfd3 design out_dir={os.path.abspath(temp_dir)} inputs={os.path.abspath(json_path)}"
-            if num_designs > 1:
-                cmd += f" inference.num_designs={num_designs}"
-                
-            job_id = self.execute(cmd, job_name="rfd_design")
+        job_id = self.execute(cmd, job_name="rfd_design")
+        
+        # Parse output: look for generated .cif.gz files
+        generated_files = glob.glob(os.path.join(self.output_dir, "*.cif.gz"))
+        if not generated_files:
+            logger.error(f"No .cif.gz output found in {self.output_dir}")
+            return results
             
-            # Parse output: look for generated .cif.gz files
-            generated_files = glob.glob(os.path.join(temp_dir, "*.cif.gz"))
-            if not generated_files:
-                logger.error(f"No .cif.gz output found in {temp_dir}")
-                return results
-                
-            output_files = []
-            for gf in generated_files:
-                dest = os.path.join(self.output_dir, os.path.basename(gf))
-                shutil.copy(gf, dest)
-                output_files.append(dest)
-                
-            results["generated_files"] = output_files
-            results["job_id"] = job_id
-            results["output_dir"] = self.output_dir
-            results["status"] = "success"
+        results["generated_files"] = generated_files
+        results["job_id"] = job_id
+        results["output_dir"] = self.output_dir
+        results["status"] = "success"
 
         return results
 
