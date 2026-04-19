@@ -12,4 +12,3 @@ dist/
 *.egg-info/
 .DS_Store
 work_dir/
-!protdesigntools/data/global_config.json
