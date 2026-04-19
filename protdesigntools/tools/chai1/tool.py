@@ -35,7 +35,6 @@ class Chai1(BaseTool):
         parser.add_argument("--sequence", type=str, help="Single protein sequence string")
         parser.add_argument("--ligand", type=str, help="Optional ligand SMILES for complex prediction")
         parser.add_argument("--target_dna_seq", type=str, help="Target DNA sequence to replace DNA chains in PDB")
-        parser.add_argument("--output_dir", type=str, help="Output directory")
         return parser
 
     def _prepare_fasta(self, input_params: Dict[str, Any], temp_dir: str) -> str:

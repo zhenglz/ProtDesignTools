@@ -28,7 +28,6 @@ class RFDiffusion(BaseTool):
         parser.add_argument("--fixed_atoms", type=str, help="JSON dict of fixed atoms")
         parser.add_argument("--num_designs", type=int, default=1, help="Number of designs to generate")
         parser.add_argument("--job_key", type=str, default="dsDNA_protein_design", help="JSON key for the job (e.g. dsDNA_protein_design)")
-        parser.add_argument("--output_dir", type=str, help="Output directory")
         return parser
 
     def _prepare_inference_json(self, input_params: Dict[str, Any], output_dir: str) -> str:
