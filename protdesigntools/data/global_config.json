@@ -1,0 +1,87 @@
+
+{
+    "global_exec_mode": "local",
+    "default_slurm_params": {
+        "partition": "AMD",
+        "nodes": 1,
+        "ntasks": 1,
+        "cpus_per_task": 4
+    },
+    "tools": {
+        "ProteinMPNN": {
+            "python_env": "proteinmpnn_env",
+            "script_path": "/home/bjtc/apps/ProteinMPNN/protein_mpnn_run.py",
+            "binary_path": "",
+            "tool_work_dir": "proteinmpnn",
+            "slurm_params": {}
+        },
+        "Chai1": {
+            "python_env": "",
+            "script_path": "/sugon_store/pub_data/tools/chai-lab/run.sh",
+            "binary_path": "",
+            "tool_work_dir": "chai1",
+            "slurm_params": {
+                "partition": "GPU",
+                "gres": "gpu:1",
+                "cpus_per_task": 8
+            }
+        },
+        "ESM2": {
+            "python_env": "esmfold",
+            "script_path": "run_esm2_score.py",
+            "binary_path": "",
+            "tool_work_dir": "esm2",
+            "slurm_params": {}
+        },
+        "DLKcat": {
+            "python_env": "dlkcat_env",
+            "script_path": "run_dlkcat.py",
+            "binary_path": "",
+            "tool_work_dir": "dlkcat",
+            "slurm_params": {}
+        },
+        "TMalign": {
+            "python_env": "",
+            "script_path": "",
+            "binary_path": "TMalign",
+            "tool_work_dir": "tmalign",
+            "slurm_params": {}
+        },
+        "Pythia": {
+            "python_env": "pythia_env",
+            "script_path": "run_pythia.py",
+            "binary_path": "",
+            "tool_work_dir": "pythia",
+            "slurm_params": {}
+        },
+        "AutoDockVina": {
+            "python_env": "",
+            "script_path": "",
+            "binary_path": "vina",
+            "tool_work_dir": "vina",
+            "slurm_params": {}
+        },
+        "OpenMMSimulation": {
+            "python_env": "openmm_env",
+            "script_path": "run_openmm.py",
+            "binary_path": "",
+            "tool_work_dir": "openmm",
+            "slurm_params": {
+                "partition": "GPU",
+                "gres": "gpu:1",
+                "cpus_per_task": 4
+            }
+        },
+        "RFDiffusion": {
+            "python_env": "",
+            "script_path": "/sugon_store/zhengliangzhen/apps/RFDiffusion3/source_rfd3.sh",
+            "binary_path": "",
+            "tool_work_dir": "rfdiffusion",
+            "slurm_params": {
+                "partition": "GPU",
+                "gres": "gpu:1",
+                "cpus_per_task": 8
+            }
+        }
+    }
+}
