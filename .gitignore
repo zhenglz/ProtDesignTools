@@ -13,9 +13,5 @@ dist/
 .DS_Store
 work_dir/
 *.log
-data/default_configs/
-*.pdb
 *.fasta
 *.json
-!tools/**/config.json
-!data/default_config.json
