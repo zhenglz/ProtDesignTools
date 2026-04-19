@@ -199,26 +199,30 @@ class Chai1(BaseTool):
             "status": "failed"
         }
         
-        with tempfile.TemporaryDirectory(dir=self.output_dir, prefix="chai_input_") as temp_dir:
-            fasta_path = self._prepare_fasta(input_params, temp_dir)
-            
-            # The Chai-1 CLI usually takes the fasta and output directory
-            args = [
-                fasta_path,
-                self.output_dir
-            ]
-            
-            cmd = self.build_command(script_path, args)
-            
-            job_id = self.execute(cmd, job_name="chai1_pred")
-            
-            # Parse outputs directly from self.output_dir
-            parsed_data = self._parse_chai_output(self.output_dir, self.output_dir)
-            
-            results.update(parsed_data)
-            results["job_id"] = job_id
-            results["output_dir"] = self.output_dir
-            results["status"] = "success"
+        # Keep tempdir active outside the block if running asynchronously or just don't clean it up immediately.
+        # Alternatively, create a standard directory.
+        temp_dir = os.path.join(self.output_dir, "chai_input_fasta")
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        fasta_path = self._prepare_fasta(input_params, temp_dir)
+        
+        # The Chai-1 CLI usually takes the fasta and output directory
+        args = [
+            fasta_path,
+            self.output_dir
+        ]
+        
+        cmd = self.build_command(script_path, args)
+        
+        job_id = self.execute(cmd, job_name="chai1_pred")
+        
+        # Parse outputs directly from self.output_dir
+        parsed_data = self._parse_chai_output(self.output_dir, self.output_dir)
+        
+        results.update(parsed_data)
+        results["job_id"] = job_id
+        results["output_dir"] = self.output_dir
+        results["status"] = "success"
 
         return results
 
