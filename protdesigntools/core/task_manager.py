@@ -43,13 +43,13 @@ class TaskManager(ABC):
         """Cancel a specific job"""
         pass
 
-    def wait_for_jobs(self, job_ids: List[str], poll_interval: int = 10):
+    def wait_for_jobs(self, job_ids: List[str], poll_interval: int = 10) -> None:
         """Wait for a list of jobs to complete"""
         while True:
             all_done = True
             for job_id in job_ids:
                 status = self.get_status(job_id)
-                if status in [JobStatus.PENDING, JobStatus.RUNNING]:
+                if status in (JobStatus.PENDING, JobStatus.RUNNING):
                     all_done = False
                     break
             if all_done:
@@ -103,6 +103,12 @@ class LocalTaskManager(TaskManager):
             self.processes[job_id].terminate()
             return True
         return False
+        
+    def wait_for_jobs(self, job_ids: List[str], poll_interval: int = 10) -> None:
+        """Wait for a list of jobs to complete"""
+        for job_id in job_ids:
+            if job_id in self.processes:
+                self.processes[job_id].wait()
 
 class SlurmTaskManager(TaskManager):
     """Slurm task manager"""
