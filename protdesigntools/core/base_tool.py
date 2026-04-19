@@ -121,7 +121,7 @@ class BaseTool(ABC):
         slurm_kwargs = global_config.get("default_slurm_params", {}).copy()
         slurm_kwargs.update(self.config.get("slurm_params", {}))
         slurm_kwargs.update(kwargs)
-        
+        print("Running cmd: ", cmd)
         manager = get_manager(mode, work_dir=self.output_dir, **slurm_kwargs)
         job_id = manager.submit(command, job_name, **slurm_kwargs)
         
