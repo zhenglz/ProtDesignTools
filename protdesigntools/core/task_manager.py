@@ -67,14 +67,21 @@ class LocalTaskManager(TaskManager):
         # Simple local execution. In a real scenario, we might want a queue system.
         # For now, we just run it and store the process object.
         log_file = os.path.join(self.work_dir, f"{job_name}.log")
-        with open(log_file, "w") as f:
-            proc = subprocess.Popen(
-                command, 
-                shell=True, 
-                stdout=f, 
-                stderr=subprocess.STDOUT,
-                cwd=self.work_dir
-            )
+        
+        # We need to keep the file object open while the process is running,
+        # otherwise stdout/stderr writes will fail.
+        f = open(log_file, "w")
+        proc = subprocess.Popen(
+            command, 
+            shell=True, 
+            stdout=f, 
+            stderr=subprocess.STDOUT,
+            cwd=self.work_dir
+        )
+        
+        # Store the file object so we can close it later when process finishes
+        proc._log_file_obj = f
+        
         job_id = str(proc.pid)
         self.processes[job_id] = proc
         self.jobs[job_id] = {
@@ -93,14 +100,21 @@ class LocalTaskManager(TaskManager):
         ret = proc.poll()
         if ret is None:
             return JobStatus.RUNNING
-        elif ret == 0:
+        
+        if hasattr(proc, "_log_file_obj") and not proc._log_file_obj.closed:
+            proc._log_file_obj.close()
+            
+        if ret == 0:
             return JobStatus.COMPLETED
         else:
             return JobStatus.FAILED
 
     def cancel(self, job_id: str) -> bool:
         if job_id in self.processes:
-            self.processes[job_id].terminate()
+            proc = self.processes[job_id]
+            proc.terminate()
+            if hasattr(proc, "_log_file_obj"):
+                proc._log_file_obj.close()
             return True
         return False
         
@@ -108,7 +122,17 @@ class LocalTaskManager(TaskManager):
         """Wait for a list of jobs to complete"""
         for job_id in job_ids:
             if job_id in self.processes:
-                self.processes[job_id].wait()
+                proc = self.processes[job_id]
+                # wait() can return returncode, we wait for the process to finish
+                proc.wait()
+                
+                # close the file handler
+                if hasattr(proc, "_log_file_obj"):
+                    proc._log_file_obj.close()
+                    
+                # Check if it succeeded
+                if proc.returncode != 0:
+                    logger.warning(f"Local job {job_id} exited with code {proc.returncode}")
 
 class SlurmTaskManager(TaskManager):
     """Slurm task manager"""
