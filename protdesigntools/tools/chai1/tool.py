@@ -8,6 +8,7 @@ import numpy as np
 import shutil
 from typing import Dict, Any, List, Optional
 from protdesigntools.core.base_tool import BaseTool
+from protdesigntools.core.structure import Structure
 
 # We might need BioPython for CIF to PDB conversion
 try:
