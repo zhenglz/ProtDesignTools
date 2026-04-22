@@ -4,6 +4,10 @@
 TM-align is a protein structure alignment algorithm that uses TM-score to evaluate structural similarity. It's widely used for comparing protein structures and detecting structural homology.
 
 ## Installation
+### Local version
+There is already a TMalign tool in this path: /data_test/home/lzzheng/bin/TMalign
+This tool could be directly used without new installation.
+
 ```bash
 # Download TM-align binary
 wget https://zhanggroup.org/TM-align/TM-align.cpp
