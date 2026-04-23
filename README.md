@@ -11,9 +11,14 @@ This repository contains skill files (markdown format) for various protein desig
 4. **AutoDock Vina** (`skills/autodock_vina.md`) - Molecular docking for drug discovery
 5. **OpenMM** (`skills/openmm.md`) - Molecular dynamics simulation toolkit
 6. **TM-align** (`skills/tmalign.md`) - Protein structure alignment and comparison
+7. **Chai-1** (`skills/chai1.md`) - Protein structure prediction tool
+8. **AlphaFold3** (`skills/alphafold3.md`) - Latest protein structure prediction
 
-### Additional Tools (to be created)
-- Chai1
+### Python Tools
+1. **Chai-1 Tool** (`tools/chai1_tool.py`) - Batch processing for Chai-1 predictions with SLURM
+2. **Chimeric Design** (`tools/chimeric_design.py`) - Pipeline for chimeric protein design
+
+### Additional Tools
 - DLKcat  
 - Pythia
 
@@ -32,9 +37,46 @@ Each skill file follows this structure:
 9. **Integration** - How to combine with other tools
 10. **References** - Links to documentation and papers
 
+## Python Tools
+
+This repository also includes Python tools for batch processing:
+
+### Chai-1 Tool (`tools/chai1_tool.py`)
+A comprehensive tool for batch Chai-1 structure predictions:
+- Process single or multiple sequences from FASTA files
+- Distribute jobs across SLURM partitions
+- Monitor job completion and extract scores
+- Generate CSV reports with best model scores (highest pLDDT) only
+- Creates organized directory structure with FASTA files in `fastas/` subdirectory
+- Allows Chai-1 to create its own output directories
+
+```bash
+# Basic usage
+python tools/chai1_tool.py --fasta sequences.fasta --output ./results
+
+# Advanced usage with multiple partitions
+python tools/chai1_tool.py --fasta sequences.fasta --output ./results \
+  --partitions "4090,3090" --max-jobs 20 --ncpus 4
+
+# Example with test sequences
+python tools/chai1_tool.py --fasta examples/chai1_example.fasta --output ./test_results
+```
+
+### Chimeric Design Pipeline (`tools/chimeric_design.py`)
+A pipeline for designing chimeric proteins by swapping loops:
+- Find homologous loops in human MSA sequences
+- Generate combinatorial chimeric sequences
+- Run Chai-1 predictions and ProteinMPNN scoring
+- Generate comprehensive reports
+
+```bash
+python tools/chimeric_design.py --fasta PH20M3.fasta --msa PH20M3_uniprot.a3m \
+  --loops "270-284;68-74" --output ./chimeric_results --submit-slurm
+```
+
 ## Purpose
 
-These skill files are designed to:
+These skill files and tools are designed to:
 - Provide LLMs with detailed knowledge of protein design tools
 - Enable LLMs to generate correct command-line invocations
 - Help LLMs understand input/output requirements
@@ -72,7 +114,19 @@ ProtDesignTools/
 │   ├── esm2.md
 │   ├── autodock_vina.md
 │   ├── openmm.md
-│   └── tmalign.md
+│   ├── tmalign.md
+│   ├── chai1.md
+│   ├── alphafold3.md
+│   ├── esm2_scorer.md
+│   ├── esmif_scorer.md
+│   ├── foldx_scorer.md
+│   ├── mutation_scoring.md
+│   ├── sequence_databases.md
+│   ├── slurm.md
+│   └── vespa_scorer.md
+├── tools/                     # Python tools and scripts
+│   ├── chai1_tool.py         # Batch Chai-1 prediction tool
+│   └── chimeric_design.py    # Chimeric protein design pipeline
 ├── examples/                  # Example files
 │   └── input.fasta
 ├── .env                       # API configuration
