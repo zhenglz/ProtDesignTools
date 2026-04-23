@@ -40,10 +40,12 @@ cd /data_test/home/lzzheng/bin
 ./submit_slurm_gpu.sh "<command>" <ncpus> <partition>
 
 # Example: Run Chai-1 on 4090 partition with 4 CPUs
-./submit_slurm_gpu.sh "cd /data_test/share/pub_tools/chai-lab && ./run.sh input.fasta ./output_chai1" 4 4090
+./submit_slurm_gpu.sh "/data_test/share/pub_tools/chai-lab/run.sh input.fasta ./output_chai1" 4 4090
 
 # Example: Run on gpu_part partition
-./submit_slurm_gpu.sh "cd /data_test/share/pub_tools/chai-lab && ./run.sh input.fasta ./output_chai1" 4 gpu_part
+./submit_slurm_gpu.sh "/data_test/share/pub_tools/chai-lab/run.sh input.fasta ./output_chai1" 4 gpu_part
+
+# Note: No need to cd to chai-lab directory first - run.sh finds its own path
 ```
 
 ### Key Parameters
@@ -364,7 +366,80 @@ nvidia-smi
 # Run with fewer parallel jobs or smaller models
 ```
 
+## Python Tools
+
+### Chai-1 Batch Processing Tool (`chai1_tool.py`)
+A comprehensive Python tool for batch Chai-1 predictions is available at: `/data_test/home/lzzheng/apps/ProtDesignTools/tools/chai1_tool.py`
+
+#### Features:
+- Process single or multiple sequences from FASTA files
+- Distribute jobs evenly across SLURM partitions
+- Limit concurrent jobs with `--max-jobs`
+- Wait for job completion and extract scores
+- Generate detailed CSV reports with all 5 model scores
+- Calculate average and best scores across models
+
+#### Basic Usage:
+```bash
+cd /data_test/home/lzzheng/apps/ProtDesignTools
+python tools/chai1_tool.py --fasta sequences.fasta --output ./results
+```
+
+#### Advanced Usage:
+```bash
+# Distribute across multiple partitions
+python tools/chai1_tool.py --fasta sequences.fasta --output ./results \
+  --partitions "4090,3090" --max-jobs 20 --ncpus 4
+
+# With custom MSA files
+python tools/chai1_tool.py --fasta sequences.fasta --output ./results \
+  --msa-dir ./msa_files --msa-suffix ".a3m"
+
+# Skip waiting for jobs
+python tools/chai1_tool.py --fasta sequences.fasta --output ./results --no-wait
+
+# Skip existing predictions
+python tools/chai1_tool.py --fasta sequences.fasta --output ./results --skip-existing
+```
+
+#### Command Line Arguments:
+- `--fasta`: Input FASTA file (required)
+- `--output`: Output directory (default: `./chai1_results`)
+- `--partitions`: Comma-separated SLURM partitions (default: "4090")
+- `--max-jobs`: Maximum concurrent jobs
+- `--ncpus`: CPUs per job (default: 4)
+- `--msa-dir`: Directory with MSA files (optional)
+- `--msa-suffix`: Suffix for MSA files (default: ".a3m")
+- `--local`: Run locally instead of SLURM
+- `--no-wait`: Submit jobs and exit without waiting
+- `--skip-existing`: Skip sequences with existing predictions
+
+#### Directory Structure:
+```
+output_directory/
+├── fastas/                    # Input FASTA files (created by tool)
+│   ├── sequence1.fasta
+│   ├── sequence2.fasta
+│   └── ...
+├── sequence1/                 # Created by Chai-1
+│   ├── pred.model_idx_0.cif
+│   ├── pred.model_idx_1.cif
+│   ├── ... (5 models total)
+│   ├── scores.model_idx_0.npz
+│   └── ... (5 models total)
+├── sequence2/                 # Created by Chai-1
+│   └── ...
+└── chai1_scores_summary.csv  # Final report
+```
+
+#### Output Report:
+The tool generates a CSV report (`chai1_scores_summary.csv`) with:
+- For each sequence: the best model (highest pLDDT) scores only
+- pLDDT, pTM, and iPTM for the best model
+- Sequence information and protein sequences
+
 ## References
 - Chai-1 installation: `/data_test/share/pub_tools/chai-lab/`
 - SLURM submission: `/data_test/home/lzzheng/bin/submit_slurm_gpu.sh`
 - Analysis utilities: `/data_test/home/lzzheng/apps/zDBProd/zftempl/utils.py`
+- Chai-1 batch tool: `/data_test/home/lzzheng/apps/ProtDesignTools/tools/chai1_tool.py`

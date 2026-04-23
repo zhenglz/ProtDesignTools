@@ -44,6 +44,9 @@ python run_ProteinMPNN.py -f protein.pdb -o ./output -n 200 -t 0.1
 
 # With specific mutation sites
 python run_ProteinMPNN.py -f protein.pdb -o ./output --mut "12A,13A,14A"
+
+# Scoring only (no sequence design)
+./run_score_only.sh <input_pdb> <input_fasta> <output_dir> <chain_id>
 ```
 
 ### Direct Usage (Standard ProteinMPNN)
@@ -290,6 +293,43 @@ done
 
 # Score sequences with ESMFold
 python esmfold_run.py --fasta_file output/designs.fa --output_dir ./esmfold_results
+```
+
+### Scoring Existing Structures with ProteinMPNN
+ProteinMPNN can also be used to score existing structures (not just design sequences). This is used in the chimeric design pipeline:
+
+```bash
+# Using the scoring script from the chimeric design pipeline
+cd /data_test/home/lzzheng/apps/ProtDesignTools
+python tools/chimeric_design.py --score-only --fasta input.fasta --output ./results
+
+# Direct scoring using the run_score_only.sh script
+cd /data_test/home/lzzheng/apps/ProteinMPNN
+./run_score_only.sh <input_pdb> <input_fasta> <output_dir> <chain_id>
+```
+
+#### Example for scoring a single structure:
+```bash
+cd /data_test/home/lzzheng/apps/ProteinMPNN
+./run_score_only.sh protein.pdb protein.fasta ./mpnn_scores A
+```
+
+#### Output from scoring:
+- NPZ files with score arrays
+- Best score represents the negative log-likelihood of the sequence given the structure
+- Lower scores indicate better compatibility
+
+### Integration with Chimeric Design Pipeline
+The chimeric design pipeline (`tools/chimeric_design.py`) uses ProteinMPNN to score chimeric structures:
+1. Generates chimeric sequences by swapping loops
+2. Predicts structures with Chai-1
+3. Scores structures with ProteinMPNN
+4. Ranks chimeras by combined scores
+
+```bash
+cd /data_test/home/lzzheng/apps/ProtDesignTools
+python tools/chimeric_design.py --fasta PH20M3.fasta --msa PH20M3_uniprot.a3m \
+  --loops "270-284;68-74" --output ./chimeric_results --submit-slurm
 ```
 
 ## References
