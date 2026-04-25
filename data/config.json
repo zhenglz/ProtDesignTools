@@ -1,0 +1,15 @@
+{
+  "chai1": {
+    "chai1_dir": "/data_test/share/pub_tools/chai-lab"
+  },
+  "rfdiffusion3": {
+    "rfd3_bin": "/data_test/home/guoliangzhu/miniconda3/envs/rfd3/bin/rfd3",
+    "rfd3_example_dir": "/data_test/home/guoliangzhu/bioapp/rfdiffusion3/example"
+  },
+  "proteinmpnn": {
+    "package_dpath": "/data_test/home/lzzheng/apps/ProteinMPNN/ProteinMPNN"
+  },
+  "slurm": {
+    "submit_script": "/data_test/home/lzzheng/bin/submit_slurm_gpu.sh"
+  }
+}

@@ -18,13 +18,10 @@ except ImportError:
     MDTRAJ_AVAILABLE = False
 from pathlib import Path
 
+from _config import load_config
 
-# Configuration
-PACKAGE_DPATH = "/data_test/home/lzzheng/apps/ProteinMPNN/ProteinMPNN"
-#PYTHON_EXE = "/data_test/home/lzzheng/.conda/envs/sfct/bin/python3.6"
-SCORE_PYTHON = f"{PACKAGE_DPATH}/../python_env/proteinmpnn/bin/python"
-PYTHON_EXE = f"{PACKAGE_DPATH}/../python_env/proteinmpnn/bin/python"
-SCRIPT_DPATH = f"{PACKAGE_DPATH}/../latest/ProteinMPNN"
+
+# Tool paths loaded from config (see data/config.json)
 
 
 def argument():
@@ -54,6 +51,8 @@ def argument():
 
     # Optional
     parser.add_argument('--chain', default='A', help='Chain ID for scoring (default: A)')
+    parser.add_argument('--config', default=None,
+                        help='Path to config JSON file (default: <repo_root>/data/config.json)')
 
     args = parser.parse_args()
 
@@ -304,7 +303,8 @@ def apply_mutations(wt_seq, mut_str):
     return "/".join(mutated_chains)
 
 
-def run_design(pdb_fpath, positions, exclude_positions, output_dir, num_seqs=100, temperature=0.1):
+def run_design(pdb_fpath, positions, exclude_positions, output_dir, num_seqs=100, temperature=0.1,
+               package_dpath=None, python_exe=None):
     """Run ProteinMPNN design mode"""
     os.makedirs(output_dir, exist_ok=True)
 
@@ -339,23 +339,23 @@ chains_to_design="{" ".join(list(fix_res_dict.keys()))}"
 # define fixed residues
 fixed_positions="{",".join(fix_res_list)}"
 
-{PYTHON_EXE} {PACKAGE_DPATH}/vanilla_proteinmpnn/helper_scripts/parse_multiple_chains.py \\
+{python_exe} {package_dpath}/vanilla_proteinmpnn/helper_scripts/parse_multiple_chains.py \\
              --input_path=$folder_with_pdbs \\
              --output_path=$path_for_parsed_chains
 
-{PYTHON_EXE} {PACKAGE_DPATH}/vanilla_proteinmpnn/helper_scripts/assign_fixed_chains.py \\
+{python_exe} {package_dpath}/vanilla_proteinmpnn/helper_scripts/assign_fixed_chains.py \\
              --input_path=$path_for_parsed_chains \\
              --output_path=$path_for_assigned_chains \\
              --chain_list "$chains_to_design"
 
-{PYTHON_EXE} {PACKAGE_DPATH}/vanilla_proteinmpnn/helper_scripts/make_fixed_positions_dict.py \\
+{python_exe} {package_dpath}/vanilla_proteinmpnn/helper_scripts/make_fixed_positions_dict.py \\
              --input_path=$path_for_parsed_chains \\
              --output_path=$path_for_fixed_positions \\
              --chain_list "$chains_to_design" \\
              --position_list "$fixed_positions"
 
 # run design
-{PYTHON_EXE} {PACKAGE_DPATH}/vanilla_proteinmpnn/protein_mpnn_run.py \\
+{python_exe} {package_dpath}/vanilla_proteinmpnn/protein_mpnn_run.py \\
         --jsonl_path $path_for_parsed_chains \\
         --chain_id_jsonl $path_for_assigned_chains \\
         --fixed_positions_jsonl $path_for_fixed_positions \\
@@ -378,7 +378,8 @@ fixed_positions="{",".join(fix_res_list)}"
     return True
 
 
-def run_score(pdb_fpath, seq_str, output_dir, chain_id='A'):
+def run_score(pdb_fpath, seq_str, output_dir, chain_id='A',
+              score_python=None, script_dpath=None):
     """Run ProteinMPNN score mode"""
     os.makedirs(output_dir, exist_ok=True)
 
@@ -387,7 +388,7 @@ def run_score(pdb_fpath, seq_str, output_dir, chain_id='A'):
 
     # Run scoring
     cmd = [
-        SCORE_PYTHON, f"{SCRIPT_DPATH}/protein_mpnn_run.py",
+        score_python, f"{script_dpath}/protein_mpnn_run.py",
         "--path_to_fasta", fasta_path,
         "--pdb_path", pdb_fpath,
         "--pdb_path_chains", chain_id,
@@ -512,6 +513,13 @@ def parse_score_output(output_dir):
 def main():
     args = argument()
 
+    # Load tool dependency config
+    cfg = load_config(args.config)
+    package_dpath = cfg["proteinmpnn"]["package_dpath"]
+    python_exe = f"{package_dpath}/../python_env/proteinmpnn/bin/python"
+    score_python = python_exe
+    script_dpath = f"{package_dpath}/../latest/ProteinMPNN"
+
     # Create output directory
     os.makedirs(args.output, exist_ok=True)
 
@@ -540,7 +548,8 @@ def main():
 
         # Run scoring
         score_dir = os.path.join(args.output, "score_results")
-        result = run_score(args.pdb, seq_to_score, score_dir, args.chain)
+        result = run_score(args.pdb, seq_to_score, score_dir, args.chain,
+                           score_python=score_python, script_dpath=script_dpath)
 
         if result:
             score = parse_score_output(score_dir)
@@ -573,7 +582,9 @@ def main():
             args.exclude,
             args.output,
             num_seqs=args.n,
-            temperature=args.temperature
+            temperature=args.temperature,
+            package_dpath=package_dpath,
+            python_exe=python_exe,
         )
 
         if design_success:

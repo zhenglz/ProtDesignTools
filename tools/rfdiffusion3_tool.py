@@ -49,13 +49,12 @@ import sys
 import time
 from collections import OrderedDict
 
+from _config import load_config
+
 
 # ---------------------------------------------------------------------------
-# Paths
+# Tool paths loaded from config (see data/config.json)
 # ---------------------------------------------------------------------------
-RFD3_BIN = "/data_test/home/guoliangzhu/miniconda3/envs/rfd3/bin/rfd3"
-RFD3_EXAMPLE_DIR = "/data_test/home/guoliangzhu/bioapp/rfdiffusion3/example"
-SLURM_SUBMIT = "/data_test/home/lzzheng/bin/submit_slurm_gpu.sh"
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +131,8 @@ def parse_args():
                         help="Skip PDBs/JSONs with existing outputs")
     parser.add_argument("--extract-only", action="store_true",
                         help="Re-process existing outputs (score extraction, FASTA)")
+    parser.add_argument("--config", default=None,
+                        help="Path to config JSON file (default: <repo_root>/data/config.json)")
 
     return parser.parse_args()
 
@@ -241,17 +242,55 @@ def build_contig(regions, pdb_file=None):
 # JSON preparation
 # ---------------------------------------------------------------------------
 
-def prepare_json(pdb_file, output_prefix, design_regions=None, contig_str=None,
+def prepare_json(pdb_file, output_dir, design_regions=None, contig_str=None,
                  fixed_atoms=None, fixed_all_context=True):
-    """Create an RFDiffusion3 JSON config and return its path."""
-    out_dir = os.path.dirname(output_prefix)
-    os.makedirs(out_dir, exist_ok=True)
+    """Create an RFDiffusion3 JSON config at {output_dir}/rf3.json and return its path."""
+    os.makedirs(output_dir, exist_ok=True)
 
     # Build contig from design regions
     if design_regions and not contig_str:
         contig_str = build_contig(design_regions, pdb_file)
 
-    # Fixed atoms — by default fix everything except the designed regions
+    # Determine job key based on chain composition
+    # Read the PDB to check for DNA chains (to select correct RFD3 model)
+    dna_chains = set()
+    if pdb_file:
+        try:
+            with open(pdb_file) as f:
+                for line in f:
+                    if line.startswith(("ATOM", "HETATM")):
+                        cid = line[21].strip()
+                        resn = line[17:20].strip()
+                        if resn in ("DA", "DT", "DC", "DG", "A", "T", "C", "G"):
+                            dna_chains.add(cid)
+        except Exception:
+            pass
+
+    job_key = "dsDNA_protein_design" if dna_chains else "protein_design"
+
+    # Calculate total length = sum across all chains of (chain_len - removed + designed)
+    length = ""
+    if design_regions:
+        # Group by chain
+        from collections import defaultdict
+        by_chain = defaultdict(list)
+        for r in design_regions:
+            by_chain[r['chain']].append(r)
+
+        total_lmin = 0
+        total_lmax = 0
+        for chain, rlist in by_chain.items():
+            chain_len = guess_chain_length(pdb_file, chain) or 9999
+            for r in rlist:
+                s, e = r['start'], r['end']
+                removed = e - s + 1 if s > 0 else 0
+                base_len = chain_len - removed if s > 0 else chain_len
+                total_lmin += base_len + r['len_min']
+                total_lmax += base_len + r['len_max']
+                break
+        length = f"{total_lmin}-{total_lmax}"
+
+    # Fixed atoms
     fixed_atoms_dict = {}
     if fixed_atoms:
         if isinstance(fixed_atoms, str):
@@ -262,29 +301,38 @@ def prepare_json(pdb_file, output_prefix, design_regions=None, contig_str=None,
         else:
             fixed_atoms_dict = fixed_atoms
     elif fixed_all_context and design_regions:
+        # For designed chains: fix context regions with "BKBN" (backbone only)
+        # so that sidechains in the designed region can be freely sampled.
+        # For non-designed chains (not in design_regions): fix with "ALL".
+        designed_chains = set(r['chain'] for r in design_regions)
         for r in design_regions:
             ch, s, e = r['chain'], r['start'], r['end']
             chain_len = guess_chain_length(pdb_file, ch) or 9999
             if s > 0:
                 if s > 1:
-                    fixed_atoms_dict[f"{ch}1-{s - 1}"] = "ALL"
+                    fixed_atoms_dict[f"{ch}1-{s - 1}"] = "BKBN"
                 if e < chain_len:
-                    fixed_atoms_dict[f"{ch}{e + 1}-{chain_len}"] = "ALL"
+                    fixed_atoms_dict[f"{ch}{e + 1}-{chain_len}"] = "BKBN"
             else:
-                fixed_atoms_dict[f"{ch}1-{chain_len}"] = "ALL"
+                fixed_atoms_dict[f"{ch}1-{chain_len}"] = "BKBN"
+
+        # Non-designed chains: fix everything
+        for ch in dna_chains:
+            chain_len = guess_chain_length(pdb_file, ch) or 9999
+            fixed_atoms_dict[f"{ch}1-{chain_len}"] = "ALL"
 
     json_data = {
-        "protein_design": {
+        job_key: {
             "input": os.path.abspath(pdb_file),
             "contig": contig_str or "",
-            "length": "",
+            "length": length,
             "select_fixed_atoms": fixed_atoms_dict,
             "is_non_loopy": True,
             "dialect": 2,
         }
     }
 
-    json_path = f"{output_prefix}.json"
+    json_path = os.path.join(output_dir, "rf3.json")
     with open(json_path, 'w') as f:
         json.dump(json_data, f, indent=2)
     return json_path
@@ -294,14 +342,14 @@ def prepare_json(pdb_file, output_prefix, design_regions=None, contig_str=None,
 # Job submission
 # ---------------------------------------------------------------------------
 
-def submit_slurm(cmd, ncpus, partition):
+def submit_slurm(cmd, ncpus, partition, slurm_submit=None):
     """Submit a command via SLURM GPU submission script."""
-    if not os.path.exists(SLURM_SUBMIT):
-        print(f"Error: SLURM submit script not found: {SLURM_SUBMIT}")
+    if not os.path.exists(slurm_submit):
+        print(f"Error: SLURM submit script not found: {slurm_submit}")
         return None
     try:
         result = sp.run(
-            [SLURM_SUBMIT, cmd, str(ncpus), partition],
+            [slurm_submit, cmd, str(ncpus), partition],
             capture_output=True, text=True, check=True,
         )
         out = result.stdout.strip()
@@ -655,6 +703,11 @@ def write_summary_csv(all_designs, csv_path):
 def main():
     args = parse_args()
 
+    # Load tool dependency config
+    cfg = load_config(args.config)
+    rfd3_bin = cfg["rfdiffusion3"]["rfd3_bin"]
+    slurm_submit = cfg["slurm"]["submit_script"]
+
     # ---- Phase 1: Gather inputs & prepare JSONs ----
     json_files = []
 
@@ -697,13 +750,10 @@ def main():
         print("\nPreparing RFDiffusion3 JSON configurations...")
         for pdb in pdbs:
             pdb_name = os.path.splitext(os.path.basename(pdb))[0]
-            # All outputs for this PDB go directly in the output directory
-            # with the PDB name as prefix
-            prefix = os.path.join(args.output, pdb_name)
             os.makedirs(args.output, exist_ok=True)
 
             json_path = prepare_json(
-                pdb, prefix,
+                pdb, args.output,
                 design_regions=design_regions,
                 contig_str=args.contig,
                 fixed_atoms=fixed_atoms,
@@ -749,12 +799,12 @@ def main():
             abs_json = os.path.abspath(jf)
             abs_out = os.path.abspath(args.output)
 
-            cmd = f"cd {RFD3_EXAMPLE_DIR} && {RFD3_BIN} design out_dir={abs_out} inputs={abs_json}"
+            cmd = f"{rfd3_bin} design out_dir={abs_out} inputs={abs_json}"
 
             if args.local:
                 job_id = run_local(cmd, base_name, log_dir)
             else:
-                job_id = submit_slurm(cmd, args.ncpus, args.slurm_partition)
+                job_id = submit_slurm(cmd, args.ncpus, args.slurm_partition, slurm_submit=slurm_submit)
 
             if job_id:
                 print(f"  {base_name}: submitted (ID: {job_id})")

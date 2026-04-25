@@ -32,13 +32,12 @@ import math
 from collections import OrderedDict, defaultdict
 from pathlib import Path
 
+from _config import load_config
+
 
 # ---------------------------------------------------------------------------
-# Paths (adjust if needed)
+# Tool paths loaded from config (see data/config.json)
 # ---------------------------------------------------------------------------
-CHAI1_DIR = "/data_test/share/pub_tools/chai-lab"
-CHAI1_RUN = os.path.join(CHAI1_DIR, "run.sh")
-SLURM_SUBMIT = "/data_test/home/lzzheng/bin/submit_slurm_gpu.sh"
 
 
 # ---------------------------------------------------------------------------
@@ -78,17 +77,18 @@ def sanitize_name(name):
 # Chai-1 submission
 # ---------------------------------------------------------------------------
 def submit_chai1_slurm(fasta_path, output_dir, msa_path=None,
-                       slurm_partition="4090", ncpus=4):
+                       slurm_partition="4090", ncpus=4,
+                       chai1_run=None, slurm_submit=None):
     """Submit a single Chai-1 job via SLURM.
 
     Returns job ID if successful, None otherwise.
     """
     # Build the command string for SLURM - run directly without cd
-    chai_cmd = f"{CHAI1_RUN} {fasta_path} {output_dir}"
+    chai_cmd = f"{chai1_run} {fasta_path} {output_dir}"
     if msa_path:
         chai_cmd += f" {msa_path}"
 
-    slurm_cmd = f"{SLURM_SUBMIT} \"{chai_cmd}\" {ncpus} {slurm_partition}"
+    slurm_cmd = f"{slurm_submit} \"{chai_cmd}\" {ncpus} {slurm_partition}"
     print(f"  Submitting SLURM job: {slurm_cmd}")
 
     result = sp.run(slurm_cmd, shell=True, stdout=sp.PIPE, stderr=sp.PIPE)
@@ -106,9 +106,9 @@ def submit_chai1_slurm(fasta_path, output_dir, msa_path=None,
         return None
 
 
-def run_chai1_local(fasta_path, output_dir, msa_path=None):
+def run_chai1_local(fasta_path, output_dir, msa_path=None, chai1_run=None):
     """Run Chai-1 directly (without SLURM)."""
-    cmd = [CHAI1_RUN, fasta_path, output_dir]
+    cmd = [chai1_run, fasta_path, output_dir]
     if msa_path:
         cmd.append(msa_path)
 
@@ -532,8 +532,16 @@ def main():
                    help="Seconds between job status checks (default: 30)")
     ap.add_argument("--skip-existing", action="store_true",
                    help="Skip sequences that already have prediction results")
+    ap.add_argument("--config", default=None,
+                   help="Path to config JSON file (default: <repo_root>/data/config.json)")
 
     args = ap.parse_args()
+
+    # Load tool dependency config
+    cfg = load_config(args.config)
+    chai1_dir = cfg["chai1"]["chai1_dir"]
+    chai1_run = os.path.join(chai1_dir, "run.sh")
+    slurm_submit = cfg["slurm"]["submit_script"]
 
     # -----------------------------------------------------------------------
     # Setup
@@ -651,7 +659,7 @@ def main():
         if jobs_to_submit:
             for seq_name, fasta_path, output_dir, msa_path in jobs_to_submit:
                 print(f"\nRunning Chai-1 for {seq_name}...")
-                run_chai1_local(fasta_path, output_dir, msa_path)
+                run_chai1_local(fasta_path, output_dir, msa_path, chai1_run=chai1_run)
             print(f"\nSubmitted {len(jobs_to_submit)} job(s) locally")
         else:
             print("\nNo jobs to submit (all sequences already have results)")
@@ -671,7 +679,8 @@ def main():
 
             for partition, (seq_name, fasta_path, output_dir, msa_path) in assignments:
                 print(f"\nSubmitting {seq_name} to partition {partition}...")
-                job_id = submit_chai1_slurm(fasta_path, output_dir, msa_path, partition, args.ncpus)
+                job_id = submit_chai1_slurm(fasta_path, output_dir, msa_path, partition, args.ncpus,
+                                            chai1_run=chai1_run, slurm_submit=slurm_submit)
 
                 if job_id:
                     job_ids.append(job_id)
