@@ -1,0 +1,15 @@
+{
+  "chai1": {
+    "chai1_dir": "/sugon_store/pub_data/tools/chai-lab"
+  },
+  "rfdiffusion3": {
+    "rfd3_bin": "/sugon_store/zhuguoliang/miniconda3/envs/rc-foundry-rfd3/bin/rfd3",
+    "rfd3_example_dir": "/sugon_store/zhuguoliang/bioapp/RFdiffusion3/foundry-production"
+  },
+  "proteinmpnn": {
+    "package_dpath": "/sugon_store/zhengliangzhen/apps/ProteinMPNN/ProteinMPNN"
+  },
+  "slurm": {
+    "submit_script": "/sugon_store/zhengliangzhen/bin/submit_slurm_gpu.sh"
+  }
+}
