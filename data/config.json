@@ -11,5 +11,9 @@
   },
   "slurm": {
     "submit_script": "/data_test/home/lzzheng/bin/submit_slurm_gpu.sh"
+  },
+  "esmif": {
+    "python_exe": "/data_test/home/lzzheng/apps/anaconda3/envs/sfct/bin/python",
+    "script_path": "/data_test/home/lzzheng/apps/zMutScan/scripts/esmif_scorer.py"
   }
 }
