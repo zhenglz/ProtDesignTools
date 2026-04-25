@@ -25,7 +25,7 @@ sys.path.insert(0, str(REPO_ROOT / 'tools'))
 
 from _config import load_config
 from chai1_tool import submit_chai1_slurm, check_job_status, extract_all_scores
-from proteinmpnn_tool import run_design, parse_design_output, pdb2fasta
+from proteinmpnn_tool import run_design, parse_design_output
 
 RFD3_SCRIPT = str(REPO_ROOT / 'tools' / 'rfdiffusion3_tool.py')
 
@@ -99,6 +99,36 @@ def cif_to_pdb(cif_path, pdb_path):
     except Exception as e:
         print(f"    CIF→PDB failed: {e}")
         return False
+
+
+# Standard 3-letter to 1-letter amino acid codes
+THREE_TO_ONE = {
+    'ALA': 'A', 'ARG': 'R', 'ASN': 'N', 'ASP': 'D', 'CYS': 'C',
+    'GLN': 'Q', 'GLU': 'E', 'GLY': 'G', 'HIS': 'H', 'ILE': 'I',
+    'LEU': 'L', 'LYS': 'K', 'MET': 'M', 'PHE': 'F', 'PRO': 'P',
+    'SER': 'S', 'THR': 'T', 'TRP': 'W', 'TYR': 'Y', 'VAL': 'V',
+}
+
+
+def get_chain_seq(pdb_file, chain_id):
+    """Extract protein sequence from a specific chain in a PDB file.
+
+    Returns the 1-letter amino acid sequence for the chain, or empty
+    string if the chain is not found or contains no protein residues.
+    Works for multi-chain complexes (protein-protein, protein-DNA).
+    """
+    try:
+        from Bio.PDB import PDBParser
+        parser = PDBParser(QUIET=True)
+        structure = parser.get_structure('x', pdb_file)
+        for chain in structure[0]:
+            if chain.id == chain_id:
+                residues = [r for r in chain
+                            if r.id[0] == ' ' and r.resname in THREE_TO_ONE]
+                return ''.join(THREE_TO_ONE[r.resname] for r in residues)
+    except Exception:
+        pass
+    return ''
 
 
 def esmif_score(pdb_file, mutations, esmif_python, esmif_script, work_dir):
@@ -274,10 +304,12 @@ def main():
             if not cif_to_pdb(best_cif, pdb_file):
                 print(f'  SKIP {name}: CIF→PDB conversion failed'); continue
 
-        # Extract wild-type sequence from PDB
-        wt_seq = pdb2fasta(pdb_file)
+        # Extract wild-type sequence for designed protein chains only
+        designed_chains = sorted(set(r[0] for r in regions))
+        chain_seqs = {ch: get_chain_seq(pdb_file, ch) for ch in designed_chains}
+        wt_seq = ''.join(chain_seqs.values())
         if not wt_seq:
-            print(f'  SKIP {name}: cannot extract PDB sequence'); continue
+            print(f'  SKIP {name}: no protein residues in designed chains'); continue
 
         print(f'\n  {name} (pLDDT={cr["plddt"]:.3f}, iPTM={cr["iptm"]:.3f})')
 
