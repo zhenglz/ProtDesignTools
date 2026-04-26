@@ -136,7 +136,7 @@ def esmif_score(pdb_file, mutations, esmif_python, esmif_script, work_dir):
     results = []
     for mut in mutations:
         cmd = [esmif_python, esmif_script, pdb_file, mut, work_dir]
-        r = sp.run(cmd, capture_output=True, text=True)
+        r = sp.run(cmd, stdout=sp.PIPE, stderr=sp.PIPE, universal_newlines=True)
         try:
             score = float(r.stdout.strip().split(': ')[-1])
             results.append((mut, score))

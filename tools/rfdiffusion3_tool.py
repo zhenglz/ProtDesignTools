@@ -350,7 +350,7 @@ def submit_slurm(cmd, ncpus, partition, slurm_submit=None):
     try:
         result = sp.run(
             [slurm_submit, cmd, str(ncpus), partition],
-            capture_output=True, text=True, check=True,
+            stdout=sp.PIPE, stderr=sp.PIPE, universal_newlines=True, check=True,
         )
         out = result.stdout.strip()
         for line in out.split('\n'):
@@ -385,7 +385,7 @@ def check_job_status_slurm(job_id):
         return "COMPLETED"
     try:
         r = sp.run(['squeue', '-j', str(job_id), '-h', '-o', '%T'],
-                   capture_output=True, text=True)
+                   stdout=sp.PIPE, stderr=sp.PIPE, universal_newlines=True)
         if r.returncode == 0:
             state = r.stdout.strip()
             return state if state else "COMPLETED"
@@ -400,7 +400,7 @@ def check_job_status_local(pid):
         return "COMPLETED"
     try:
         r = sp.run(['ps', '-p', str(pid), '-o', 'state', '--noheaders'],
-                   capture_output=True, text=True)
+                   stdout=sp.PIPE, stderr=sp.PIPE, universal_newlines=True)
         return "RUNNING" if r.returncode == 0 else "COMPLETED"
     except Exception:
         return "UNKNOWN"

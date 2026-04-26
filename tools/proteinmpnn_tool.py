@@ -369,7 +369,7 @@ fixed_positions="{",".join(fix_res_list)}"
     os.chmod(script_path, 0o755)
 
     print(f"[INFO] Running design script: {script_path}")
-    result = sp.run(f"bash {script_path}", shell=True, capture_output=True, text=True)
+    result = sp.run(f"bash {script_path}", shell=True, stdout=sp.PIPE, stderr=sp.PIPE, universal_newlines=True)
 
     if result.returncode != 0:
         print(f"[ERROR] Design failed: {result.stderr}")
@@ -401,7 +401,7 @@ def run_score(pdb_fpath, seq_str, output_dir, chain_id='A',
     ]
 
     print(f"[INFO] Running scoring command: {' '.join(cmd)}")
-    result = sp.run(cmd, capture_output=True, text=True)
+    result = sp.run(cmd, stdout=sp.PIPE, stderr=sp.PIPE, universal_newlines=True)
 
     if result.returncode != 0:
         print(f"[ERROR] Scoring failed: {result.stderr}")
