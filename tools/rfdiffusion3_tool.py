@@ -1078,7 +1078,7 @@ def main():
             abs_json = os.path.abspath(jf)
             abs_out = os.path.abspath(args.output)
 
-            cmd = f"source /sugon_store/zhengliangzhen/apps/RFDiffusion3/source_rfd3.sh && {rfd3_bin} design out_dir={abs_out} inputs={abs_json}"
+            cmd = f"source /sugon_store/zhengliangzhen/apps/RFDiffusion3/source_rfd3.sh && {rfd3_bin} design out_dir={abs_out} inputs={abs_json} diffusion_batch_size={args.num_designs} n_batches=1"
 
             if args.local:
                 job_id = run_local(cmd, base_name, log_dir)
