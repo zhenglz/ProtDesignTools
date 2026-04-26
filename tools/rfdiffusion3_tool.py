@@ -895,8 +895,10 @@ def main():
 
         while pending:
             done = []
+            job_states = {}  # jid -> status string
             for jid, (name, out_dir, jf) in pending.items():
                 status = check_job_status_local(jid) if args.local else check_job_status_slurm(jid)
+                job_states[jid] = status
                 if status in ("COMPLETED", "CD", "COMPLETING", "CG"):
                     done.append(jid)
                     completed_names.add(name)
@@ -909,10 +911,17 @@ def main():
                 del pending[jid]
 
             if pending:
-                ids_shown = list(pending.keys())[:3]
+                # Show actual SLURM state for each job
+                state_strs = []
+                for jid in pending:
+                    st = job_states.get(jid, "?")
+                    # Keep display compact — use short form
+                    st_short = {'RUNNING': 'R', 'PENDING': 'PD', 'COMPLETING': 'CG',
+                                'CONFIGURING': 'CF', 'SUSPENDED': 'S'}.get(st, st)
+                    state_strs.append(f"{jid}({st_short})")
                 done_count = total - len(pending)
                 print(f"[{time.strftime('%H:%M:%S')}] {done_count}/{total} done, "
-                      f"{len(pending)} pending (IDs: {', '.join(ids_shown)}{'...' if len(pending) > 3 else ''})")
+                      f"{len(pending)} running ({', '.join(state_strs[:3])}{'...' if len(state_strs) > 3 else ''})")
                 time.sleep(30)
 
         print(f"All {total} job(s) completed.")
