@@ -279,6 +279,129 @@ def build_contig(regions, pdb_file=None):
     return contig
 
 
+def build_chain_meta(regions, pdb_file=None):
+    """Build chain segment metadata for later output sequence splitting.
+
+    Follows the same chain-ordering logic as build_contig() but produces
+    structured segment dicts instead of a contig string. Each segment
+    describes a contiguous stretch of residues in the output.
+
+    Returns a list of dicts, each with:
+      chain      – chain ID (e.g. 'A', 'B')
+      start      – first residue number (int), or null if designed
+      end        – last residue number (int), or null if designed
+      is_designed – bool, True for new backbone regions
+      chain_type – 'protein', 'dna', 'rna', or 'ligand'
+    """
+    by_chain = OrderedDict()
+    for r in regions:
+        by_chain.setdefault(r['chain'], []).append(r)
+    for rlist in by_chain.values():
+        rlist.sort(key=lambda x: x['start'])
+
+    chain_ranges = get_pdb_chain_ranges(pdb_file) if pdb_file else {}
+    designed_chains = set(by_chain.keys())
+
+    # Classify original chain types from PDB
+    chain_types = {}
+    if pdb_file:
+        chain_types = _classify_pdb_chain_types(pdb_file)
+
+    segments = []
+
+    for chain, rlist in by_chain.items():
+        cr = chain_ranges.get(chain)
+        chain_start = cr[0] if cr else 1
+        chain_end = cr[1] if cr else (guess_chain_length(pdb_file, chain) if pdb_file else 999)
+        chain_type = chain_types.get(chain, 'protein')
+
+        prev_end = chain_start - 1
+
+        for r in rlist:
+            s, e = r['start'], r['end']
+
+            if s == 0:
+                segments.append({
+                    'chain': chain, 'start': None, 'end': None,
+                    'is_designed': True, 'chain_type': chain_type,
+                    'length_range': [r['len_min'], r['len_max']],
+                })
+                segments.append({
+                    'chain': chain, 'start': chain_start, 'end': chain_end,
+                    'is_designed': False, 'chain_type': chain_type,
+                })
+                prev_end = chain_end
+            else:
+                if s > prev_end + 1:
+                    segments.append({
+                        'chain': chain, 'start': prev_end + 1, 'end': s - 1,
+                        'is_designed': False, 'chain_type': chain_type,
+                    })
+                segments.append({
+                    'chain': chain, 'start': None, 'end': None,
+                    'is_designed': True, 'chain_type': chain_type,
+                    'length_range': [r['len_min'], r['len_max']],
+                })
+                prev_end = e
+
+        if prev_end < chain_end:
+            segments.append({
+                'chain': chain, 'start': prev_end + 1, 'end': chain_end,
+                'is_designed': False, 'chain_type': chain_type,
+            })
+
+    # Non-designed chains: fully fixed
+    for chain_id in sorted(chain_ranges.keys()):
+        if chain_id in designed_chains:
+            continue
+        start, end = chain_ranges[chain_id]
+        chain_type = chain_types.get(chain_id, 'protein')
+        segments.append({
+            'chain': chain_id, 'start': start, 'end': end,
+            'is_designed': False, 'chain_type': chain_type,
+        })
+
+    return segments
+
+
+def _classify_pdb_chain_types(pdb_file):
+    """Return {chain_id: chain_type} for all chains in a PDB file.
+
+    Reads ATOM/HETATM records to classify each chain as protein,
+    dna, rna, or ligand.
+    """
+    from collections import defaultdict
+    chain_resnames = defaultdict(set)
+    try:
+        with open(pdb_file) as f:
+            for line in f:
+                if line.startswith(("ATOM", "HETATM")):
+                    cid = line[21].strip()
+                    if not cid:
+                        continue
+                    resn = line[17:20].strip()
+                    if resn:
+                        chain_resnames[cid].add(resn)
+    except Exception:
+        return {}
+
+    result = {}
+    for cid, resnames in chain_resnames.items():
+        n_protein = sum(1 for rn in resnames if rn in THREE_TO_ONE)
+        n_dna = sum(1 for rn in resnames if rn in DNA_RESIDUES)
+        n_rna = sum(1 for rn in resnames if rn in RNA_RESIDUES)
+        n_ligand = len(resnames) - n_protein - n_dna - n_rna
+        if n_dna >= n_protein and n_dna >= n_rna and n_dna >= n_ligand and n_dna > 0:
+            result[cid] = 'dna'
+        elif n_rna >= n_protein and n_rna >= n_dna and n_rna >= n_ligand and n_rna > 0:
+            result[cid] = 'rna'
+        elif n_protein >= n_dna and n_protein >= n_rna and n_protein >= n_ligand and n_protein > 0:
+            result[cid] = 'protein'
+        else:
+            result[cid] = 'ligand'
+    return result
+
+
 # ---------------------------------------------------------------------------
 # JSON preparation
 # ---------------------------------------------------------------------------
@@ -380,12 +503,16 @@ def prepare_json(pdb_file, output_dir, design_regions=None, contig_str=None,
                 continue
             fixed_atoms_dict[f"{chain_id}{cstart}-{cend}"] = "ALL"
 
+    # Build chain segment metadata for output processing
+    chain_meta = build_chain_meta(design_regions, pdb_file) if design_regions else []
+
     json_data = {
         job_key: {
             "input": os.path.abspath(pdb_file),
             "contig": contig_str or "",
             "length": length,
             "select_fixed_atoms": fixed_atoms_dict,
+            "_chain_meta": chain_meta,
             "is_non_loopy": True,
             "dialect": 2,
         }
@@ -562,6 +689,81 @@ def load_design_scores(json_path):
         return {}
 
 
+def split_sequence_by_meta(output_seq, chain_meta):
+    """Split a single output sequence into per-chain segments using chain_meta.
+
+    Walks through chain_meta segments, slicing output_seq at each boundary.
+    Fixed segments contribute a known number of residues (end - start + 1).
+    Designed segments share the remaining residues proportionally.
+
+    Returns a list of (chain_id, chain_type, sequence) tuples.
+    """
+    if not chain_meta or not output_seq:
+        return []
+
+    # Count fixed residues and find designed segments
+    n_fixed = 0
+    n_designed = 0
+    for seg in chain_meta:
+        if seg['is_designed']:
+            n_designed += 1
+        else:
+            n_fixed += (seg['end'] - seg['start'] + 1)
+
+    total_designed = len(output_seq) - n_fixed
+    if total_designed < 0:
+        # Output shorter than expected fixed length — fall back
+        return [(chain_meta[0]['chain'], chain_meta[0]['chain_type'], output_seq)]
+
+    # Distribute designed residues among designed segments
+    # If single designed segment: all designed residues go there
+    # If multiple: split proportionally by min length, or evenly
+    designed_lengths = []
+    if n_designed == 1:
+        designed_lengths = [total_designed]
+    else:
+        # Collect min lengths for designed segments
+        min_lengths = []
+        for seg in chain_meta:
+            if seg['is_designed']:
+                lr = seg.get('length_range', [1, 999])
+                min_lengths.append(lr[0])
+        total_min = sum(min_lengths) or 1
+        # Distribute proportionally, ensuring at least 1 per segment
+        remaining = total_designed
+        for i in range(n_designed):
+            if i == n_designed - 1:
+                designed_lengths.append(remaining)
+            else:
+                share = max(1, int(total_designed * min_lengths[i] / total_min))
+                designed_lengths.append(min(share, remaining - (n_designed - i - 1)))
+                remaining -= designed_lengths[-1]
+
+    # Build per-chain sequences
+    # Merge consecutive same-chain segments
+    pos = 0
+    d_idx = 0
+    chains = OrderedDict()  # chain -> (chain_type, [sequence_parts])
+
+    for seg in chain_meta:
+        chain_type = seg['chain_type']
+        chain_id = seg['chain']
+        if seg['is_designed']:
+            seg_len = designed_lengths[d_idx]
+            d_idx += 1
+        else:
+            seg_len = seg['end'] - seg['start'] + 1
+
+        seg_seq = output_seq[pos:pos + seg_len]
+        pos += seg_len
+
+        if chain_id not in chains:
+            chains[chain_id] = (chain_type, [])
+        chains[chain_id][1].append(seg_seq)
+
+    return [(cid, ct, ''.join(parts)) for cid, (ct, parts) in chains.items()]
+
+
 def process_outputs(task_dir, output_dir):
     """Process a single task's outputs.
 
@@ -609,10 +811,28 @@ def process_outputs(task_dir, output_dir):
             except Exception as e:
                 print(f"    Error converting {cif_path}: {e}")
 
-        # Extract sequences
+        # Extract sequences — try multi-chain splitting first
         chains = None
         if os.path.exists(cif_path):
             chains = cif_sequence(cif_path)
+
+            # If output is single-chain but the design is multi-chain,
+            # use chain_meta from rf3.json to split into proper chains
+            rf3_path = os.path.join(task_dir, "rf3.json")
+            if chains and len(chains) == 1 and os.path.exists(rf3_path):
+                try:
+                    with open(rf3_path) as f:
+                        rf3_data = json.load(f)
+                    # rf3.json has one top-level key (job_key)
+                    job_data = next(iter(rf3_data.values()))
+                    chain_meta = job_data.get("_chain_meta", [])
+                    if chain_meta:
+                        output_seq = chains[0][2]  # full single-chain sequence
+                        split_chains = split_sequence_by_meta(output_seq, chain_meta)
+                        if split_chains:
+                            chains = split_chains
+                except Exception:
+                    pass  # fall back to raw cif_sequence result
 
         # Load scores
         scores = {}
@@ -693,7 +913,7 @@ def write_fasta(designs, output_dir, top_n=0):
         with open(fasta_path, 'w') as f:
             for cid, chain_type, seq in d["chains"]:
                 header = (
-                    f"{chain_type_prefix(chain_type)}|{design_tag}_{cid} "
+                    f">{chain_type_prefix(chain_type)}|{design_tag}_{cid} "
                     f"ca_dev={d['max_ca_deviation']:.2f} "
                     f"breaks={d['n_chainbreaks']} "
                     f"clashes={d['n_clashing']} "
@@ -710,7 +930,7 @@ def write_fasta(designs, output_dir, top_n=0):
             design_tag = f"design_{rank:02d}"
             for cid, chain_type, seq in d["chains"]:
                 header = (
-                    f"{chain_type_prefix(chain_type)}|{design_tag}_{cid} "
+                    f">{chain_type_prefix(chain_type)}|{design_tag}_{cid} "
                     f"ca_dev={d['max_ca_deviation']:.2f} "
                     f"breaks={d['n_chainbreaks']} "
                     f"clashes={d['n_clashing']} "
