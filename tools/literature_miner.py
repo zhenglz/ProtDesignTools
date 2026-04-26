@@ -658,12 +658,10 @@ def extract_pdf_text(pdf_path, max_chars=8000):
     PyPDF2 = safe_import("PyPDF2")
     if PyPDF2:
         try:
-            with (
-                contextlib.redirect_stderr(stderr_null),
-                contextlib.redirect_stdout(stderr_null),
-            ):
-                reader = PyPDF2.PdfReader(pdf_path)
-                result = _try_extract(reader)
+            with contextlib.redirect_stderr(stderr_null):
+                with contextlib.redirect_stdout(stderr_null):
+                    reader = PyPDF2.PdfReader(pdf_path)
+                    result = _try_extract(reader)
             if result:
                 return result
         except Exception:
@@ -673,21 +671,21 @@ def extract_pdf_text(pdf_path, max_chars=8000):
     pdfplumber = safe_import("pdfplumber")
     if pdfplumber:
         try:
-            with (
-                contextlib.redirect_stderr(stderr_null),
-                contextlib.redirect_stdout(stderr_null),
-            ):
-                with pdfplumber.open(pdf_path) as pdf:
-                    text_parts = []
-                    total = 0
-                    for page in pdf.pages:
-                        page_text = page.extract_text()
-                        if page_text:
-                            text_parts.append(page_text)
-                            total += len(page_text)
-                            if total >= max_chars:
-                                break
-                    result = "\n".join(text_parts)[:max_chars] if text_parts else None
+            with contextlib.redirect_stderr(stderr_null):
+                with contextlib.redirect_stdout(stderr_null):
+                    with pdfplumber.open(pdf_path) as pdf:
+                        text_parts = []
+                        total = 0
+                        for page in pdf.pages:
+                            page_text = page.extract_text()
+                            if page_text:
+                                text_parts.append(page_text)
+                                total += len(page_text)
+                                if total >= max_chars:
+                                    break
+                        result = (
+                            "\n".join(text_parts)[:max_chars] if text_parts else None
+                        )
             if result:
                 return result
         except Exception:
@@ -697,12 +695,10 @@ def extract_pdf_text(pdf_path, max_chars=8000):
     pypdf = safe_import("pypdf")
     if pypdf:
         try:
-            with (
-                contextlib.redirect_stderr(stderr_null),
-                contextlib.redirect_stdout(stderr_null),
-            ):
-                reader = pypdf.PdfReader(pdf_path)
-                result = _try_extract(reader)
+            with contextlib.redirect_stderr(stderr_null):
+                with contextlib.redirect_stdout(stderr_null):
+                    reader = pypdf.PdfReader(pdf_path)
+                    result = _try_extract(reader)
             if result:
                 return result
         except Exception:
