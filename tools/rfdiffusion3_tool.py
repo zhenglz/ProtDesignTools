@@ -166,6 +166,34 @@ def guess_chain_length(pdb_file, chain_id):
         return None
 
 
+def get_pdb_chain_ranges(pdb_file):
+    """Return {chain_id: (min_res, max_res)} for all chains in a PDB file.
+
+    Reads ATOM/HETATM records to discover every chain and its actual
+    residue numbering range.  Returns an empty dict on failure.
+    """
+    chains = {}
+    try:
+        with open(pdb_file) as f:
+            for line in f:
+                if line.startswith(("ATOM", "HETATM")):
+                    cid = line[21].strip()
+                    if not cid:
+                        continue
+                    try:
+                        resi = int(line[22:26].strip())
+                    except ValueError:
+                        continue
+                    if cid not in chains:
+                        chains[cid] = [resi, resi]
+                    else:
+                        chains[cid][0] = min(chains[cid][0], resi)
+                        chains[cid][1] = max(chains[cid][1], resi)
+        return {k: tuple(v) for k, v in chains.items()}
+    except Exception:
+        return {}
+
+
 # ---------------------------------------------------------------------------
 # Design regions → contig
 # ---------------------------------------------------------------------------
@@ -200,6 +228,7 @@ def build_contig(regions, pdb_file=None):
     For each region (start > 0): keep context-before, design /Lmin-Lmax.
     For N-terminal (start == 0): design /Lmin-Lmax, keep entire chain.
     Trailing context added after all regions on each chain.
+    Non-designed chains from the PDB are included as fully fixed context.
     """
     by_chain = OrderedDict()
     for r in regions:
@@ -207,11 +236,16 @@ def build_contig(regions, pdb_file=None):
     for rlist in by_chain.values():
         rlist.sort(key=lambda x: x['start'])
 
+    chain_ranges = get_pdb_chain_ranges(pdb_file) if pdb_file else {}
+    designed_chains = set(by_chain.keys())
+
     parts = []
     for chain, rlist in by_chain.items():
-        chain_len = guess_chain_length(pdb_file, chain) if pdb_file else 999
+        cr = chain_ranges.get(chain)
+        chain_start = cr[0] if cr else 1
+        chain_end = cr[1] if cr else (guess_chain_length(pdb_file, chain) if pdb_file else 999)
 
-        prev_end = 0  # last residue *kept* before a design region
+        prev_end = chain_start - 1  # last residue *kept* before a design region
 
         for r in rlist:
             s, e = r['start'], r['end']
@@ -219,8 +253,8 @@ def build_contig(regions, pdb_file=None):
             if s == 0:
                 # N-terminal addition: design then the whole chain
                 parts.append(f"/{r['len_min']}-{r['len_max']}")
-                parts.append(f"{chain}1-{chain_len}")
-                prev_end = chain_len
+                parts.append(f"{chain}{chain_start}-{chain_end}")
+                prev_end = chain_end
             else:
                 # Context before (if there is a gap since prev_end)
                 if s > prev_end + 1:
@@ -230,11 +264,18 @@ def build_contig(regions, pdb_file=None):
                 prev_end = e
 
         # Trailing context after last region on this chain
-        if prev_end < chain_len:
-            parts.append(f"{chain}{prev_end + 1}-{chain_len}")
+        if prev_end < chain_end:
+            parts.append(f"{chain}{prev_end + 1}-{chain_end}")
+
+    # Add non-designed chains as fully fixed context
+    for chain_id in sorted(chain_ranges.keys()):
+        if chain_id in designed_chains:
+            continue
+        start, end = chain_ranges[chain_id]
+        parts.append(f"{chain_id}{start}-{end}")
 
     contig = ",".join(parts).replace(",/", "/")
-    contig = re.sub(r'[A-Za-z]1-0/', '', contig)
+    contig = re.sub(r'[A-Za-z]\d+-\d+/(?!\d)', '', contig)
     return contig
 
 
@@ -268,26 +309,41 @@ def prepare_json(pdb_file, output_dir, design_regions=None, contig_str=None,
 
     job_key = "dsDNA_protein_design" if dna_chains else "protein_design"
 
+    # Get all chain ranges from PDB
+    chain_ranges = get_pdb_chain_ranges(pdb_file) if pdb_file else {}
+
     # Calculate total length = sum across all chains of (chain_len - removed + designed)
     length = ""
     if design_regions:
-        # Group by chain
         from collections import defaultdict
         by_chain = defaultdict(list)
         for r in design_regions:
             by_chain[r['chain']].append(r)
 
+        designed_chains_len = set(by_chain.keys())
+
         total_lmin = 0
         total_lmax = 0
         for chain, rlist in by_chain.items():
-            chain_len = guess_chain_length(pdb_file, chain) or 9999
+            cr = chain_ranges.get(chain)
+            chain_start = cr[0] if cr else 1
+            chain_end = cr[1] if cr else (guess_chain_length(pdb_file, chain) or 9999)
             for r in rlist:
                 s, e = r['start'], r['end']
                 removed = e - s + 1 if s > 0 else 0
-                base_len = chain_len - removed if s > 0 else chain_len
+                base_len = (chain_end - chain_start + 1) - removed if s > 0 else (chain_end - chain_start + 1)
                 total_lmin += base_len + r['len_min']
                 total_lmax += base_len + r['len_max']
                 break
+
+        # Non-designed chains: fixed length
+        for chain_id, (cstart, cend) in chain_ranges.items():
+            if chain_id in designed_chains_len:
+                continue
+            chain_len = cend - cstart + 1
+            total_lmin += chain_len
+            total_lmax += chain_len
+
         length = f"{total_lmin}-{total_lmax}"
 
     # Fixed atoms
@@ -307,19 +363,22 @@ def prepare_json(pdb_file, output_dir, design_regions=None, contig_str=None,
         designed_chains = set(r['chain'] for r in design_regions)
         for r in design_regions:
             ch, s, e = r['chain'], r['start'], r['end']
-            chain_len = guess_chain_length(pdb_file, ch) or 9999
+            cr = chain_ranges.get(ch)
+            chain_start = cr[0] if cr else 1
+            chain_end = cr[1] if cr else (guess_chain_length(pdb_file, ch) or 9999)
             if s > 0:
-                if s > 1:
-                    fixed_atoms_dict[f"{ch}1-{s - 1}"] = "BKBN"
-                if e < chain_len:
-                    fixed_atoms_dict[f"{ch}{e + 1}-{chain_len}"] = "BKBN"
+                if s > chain_start:
+                    fixed_atoms_dict[f"{ch}{chain_start}-{s - 1}"] = "BKBN"
+                if e < chain_end:
+                    fixed_atoms_dict[f"{ch}{e + 1}-{chain_end}"] = "BKBN"
             else:
-                fixed_atoms_dict[f"{ch}1-{chain_len}"] = "BKBN"
+                fixed_atoms_dict[f"{ch}{chain_start}-{chain_end}"] = "BKBN"
 
-        # Non-designed chains: fix everything
-        for ch in dna_chains:
-            chain_len = guess_chain_length(pdb_file, ch) or 9999
-            fixed_atoms_dict[f"{ch}1-{chain_len}"] = "ALL"
+        # Non-designed chains: fix everything with "ALL"
+        for chain_id, (cstart, cend) in chain_ranges.items():
+            if chain_id in designed_chains:
+                continue
+            fixed_atoms_dict[f"{chain_id}{cstart}-{cend}"] = "ALL"
 
     json_data = {
         job_key: {
