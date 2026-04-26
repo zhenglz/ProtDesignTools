@@ -21,6 +21,10 @@ Usage:
   python tools/literature_miner.py --query "CRISPR gene editing" \\
     --no-download
 
+  # Ingest PDFs from a local directory (with caching)
+  python tools/literature_miner.py --pdf-dir ./my_papers \\
+    --db-path ./literature_mining/knowledge_db.json
+
   # Search the local knowledge database
   python tools/literature_miner.py --query-db "diffusion" \\
     --db-path ./literature_mining/knowledge_db.json
@@ -67,30 +71,49 @@ DEEPSEEK_MODEL = os.environ.get("OPENAI_MODEL", "deepseek-chat")
 # ---------------------------------------------------------------------------
 # Regex patterns for paper identification
 # ---------------------------------------------------------------------------
-DOI_PATTERN = re.compile(r'\b(10\.\d{4,9}/[-._;()/:A-Za-z0-9]+)\b')
-ARXIV_ID_PATTERN = re.compile(r'arxiv\.org/abs/(\d+\.\d+(?:v\d+)?)')
-ARXIV_RAW_PATTERN = re.compile(r'arxiv:\s*(\d+\.\d+(?:v\d+)?)', re.IGNORECASE)
-PUBMED_PATTERN = re.compile(r'pubmed\.ncbi\.nlm\.nih\.gov/(\d+)')
-PMID_PATTERN = re.compile(r'PMID:\s*(\d+)', re.IGNORECASE)
-PMCID_PATTERN = re.compile(r'(PMC\d+)', re.IGNORECASE)
-PDF_URL_PATTERN = re.compile(r'\.pdf$', re.IGNORECASE)
+DOI_PATTERN = re.compile(r"\b(10\.\d{4,9}/[-._;()/:A-Za-z0-9]+)\b")
+ARXIV_ID_PATTERN = re.compile(r"arxiv\.org/abs/(\d+\.\d+(?:v\d+)?)")
+ARXIV_RAW_PATTERN = re.compile(r"arxiv:\s*(\d+\.\d+(?:v\d+)?)", re.IGNORECASE)
+PUBMED_PATTERN = re.compile(r"pubmed\.ncbi\.nlm\.nih\.gov/(\d+)")
+PMID_PATTERN = re.compile(r"PMID:\s*(\d+)", re.IGNORECASE)
+PMCID_PATTERN = re.compile(r"(PMC\d+)", re.IGNORECASE)
+PDF_URL_PATTERN = re.compile(r"\.pdf$", re.IGNORECASE)
 
 # Keywords that suggest a URL is academic
 ACADEMIC_DOMAINS = {
-    'arxiv.org', 'pubmed.ncbi.nlm.nih.gov', 'ncbi.nlm.nih.gov',
-    'pmc.ncbi.nlm.nih.gov', 'nature.com', 'science.org', 'cell.com', 'pnas.org',
-    'academic.oup.com', 'journals.plos.org', 'pubs.acs.org',
-    'onlinelibrary.wiley.com', 'link.springer.com',
-    'sciencedirect.com', 'elifesciences.org', 'biorxiv.org',
-    'medrxiv.org', 'chemrxiv.org', 'researchgate.net',
-    'semanticscholar.org', 'dl.acm.org', 'ieeexplore.ieee.org',
-    '.edu', 'mdpi.com', 'frontiersin.org', 'ncbi.nlm.nih.gov',
+    "arxiv.org",
+    "pubmed.ncbi.nlm.nih.gov",
+    "ncbi.nlm.nih.gov",
+    "pmc.ncbi.nlm.nih.gov",
+    "nature.com",
+    "science.org",
+    "cell.com",
+    "pnas.org",
+    "academic.oup.com",
+    "journals.plos.org",
+    "pubs.acs.org",
+    "onlinelibrary.wiley.com",
+    "link.springer.com",
+    "sciencedirect.com",
+    "elifesciences.org",
+    "biorxiv.org",
+    "medrxiv.org",
+    "chemrxiv.org",
+    "researchgate.net",
+    "semanticscholar.org",
+    "dl.acm.org",
+    "ieeexplore.ieee.org",
+    ".edu",
+    "mdpi.com",
+    "frontiersin.org",
+    "ncbi.nlm.nih.gov",
 }
 
 
 # ---------------------------------------------------------------------------
 # .env file loading
 # ---------------------------------------------------------------------------
+
 
 def find_repo_root():
     """Find the repository root by looking for .git directory or .env file."""
@@ -99,8 +122,9 @@ def find_repo_root():
     # Walk up until we find .git or .env
     current = script_dir
     for _ in range(5):
-        if os.path.exists(os.path.join(current, ".git")) or \
-           os.path.exists(os.path.join(current, ".env")):
+        if os.path.exists(os.path.join(current, ".git")) or os.path.exists(
+            os.path.join(current, ".env")
+        ):
             return current
         parent = os.path.dirname(current)
         if parent == current:
@@ -137,6 +161,7 @@ def load_env_file():
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def get_api_key(arg_val, env_var):
     """Get API key from argument or environment variable."""
@@ -178,47 +203,103 @@ def parse_args():
 
     # --- Mode selection (mutually exclusive) ---
     mode_group = parser.add_mutually_exclusive_group()
-    mode_group.add_argument("--query", "-q",
-                            help="Topic or sentence to search the web for")
-    mode_group.add_argument("--query-db",
-                            help="Search the local knowledge database for a keyword")
-    mode_group.add_argument("--agent", action="store_true",
-                            help="Enable agent/RAG mode for Q&A over the knowledge database")
+    mode_group.add_argument(
+        "--query", "-q", help="Topic or sentence to search the web for"
+    )
+    mode_group.add_argument(
+        "--query-db", help="Search the local knowledge database for a keyword"
+    )
+    mode_group.add_argument(
+        "--agent",
+        action="store_true",
+        help="Enable agent/RAG mode for Q&A over the knowledge database",
+    )
+    mode_group.add_argument(
+        "--pdf-dir",
+        help="Path to a directory of PDF files to ingest into the knowledge database",
+    )
 
     # --- Web search options ---
-    parser.add_argument("--output-dir", "-o", default="./literature_mining",
-                        help="Output directory (default: ./literature_mining)")
-    parser.add_argument("--tavily-api-key",
-                        help="Tavily API key (or set TAVILY_API_KEY env var)")
-    parser.add_argument("--deepseek-api-key",
-                        help="DeepSeek API key (or set OPENAI_API_KEY env var)")
-    parser.add_argument("--max-results", type=int, default=20,
-                        help="Max search results to process (default: 20)")
-    parser.add_argument("--max-downloads", type=int, default=10,
-                        help="Max papers to download (default: 10)")
-    parser.add_argument("--no-download", action="store_true",
-                        help="Skip PDF download, only collect metadata")
-    parser.add_argument("--no-summarize", action="store_true",
-                        help="Skip LLM summarization of papers")
-    parser.add_argument("--scihub-mirror", default="https://sci-hub.se",
-                        help="Sci-Hub mirror URL (default: https://sci-hub.se)")
+    parser.add_argument(
+        "--output-dir",
+        "-o",
+        default="./literature_mining",
+        help="Output directory (default: ./literature_mining)",
+    )
+    parser.add_argument(
+        "--tavily-api-key", help="Tavily API key (or set TAVILY_API_KEY env var)"
+    )
+    parser.add_argument(
+        "--deepseek-api-key", help="DeepSeek API key (or set OPENAI_API_KEY env var)"
+    )
+    parser.add_argument(
+        "--max-results",
+        type=int,
+        default=20,
+        help="Max search results to process (default: 20)",
+    )
+    parser.add_argument(
+        "--max-downloads",
+        type=int,
+        default=10,
+        help="Max papers to download (default: 10)",
+    )
+    parser.add_argument(
+        "--no-download",
+        action="store_true",
+        help="Skip PDF download, only collect metadata",
+    )
+    parser.add_argument(
+        "--no-summarize", action="store_true", help="Skip LLM summarization of papers"
+    )
+    parser.add_argument(
+        "--scihub-mirror",
+        default="https://sci-hub.se",
+        help="Sci-Hub mirror URL (default: https://sci-hub.se)",
+    )
 
     # --- Agent mode options ---
-    parser.add_argument("--question",
-                        help="Question to ask in agent mode (used with --agent)")
-    parser.add_argument("--agent-top-k", type=int, default=5,
-                        help="Top papers for context in agent mode (default: 5)")
-    parser.add_argument("--agent-interactive", action="store_true",
-                        help="Interactive Q&A session (used with --agent)")
+    parser.add_argument(
+        "--question", help="Question to ask in agent mode (used with --agent)"
+    )
+    parser.add_argument(
+        "--agent-top-k",
+        type=int,
+        default=5,
+        help="Top papers for context in agent mode (default: 5)",
+    )
+    parser.add_argument(
+        "--agent-interactive",
+        action="store_true",
+        help="Interactive Q&A session (used with --agent)",
+    )
 
     # --- Database options ---
-    parser.add_argument("--db-path", default=None,
-                        help="Path to knowledge database JSON file")
+    parser.add_argument(
+        "--db-path", default=None, help="Path to knowledge database JSON file"
+    )
+
+    # --- PDF directory options ---
+    parser.add_argument(
+        "--pdf-max-chars",
+        type=int,
+        default=8000,
+        help="Max characters to extract from each PDF (default: 8000)",
+    )
+    parser.add_argument(
+        "--no-pdf-skip-existing",
+        action="store_false",
+        dest="pdf_skip_existing",
+        help="Re-process PDFs even if already in the knowledge database",
+    )
 
     # --- Output options ---
-    parser.add_argument("--output-format", default="table",
-                        choices=["table", "json", "csv"],
-                        help="Output format (default: table)")
+    parser.add_argument(
+        "--output-format",
+        default="table",
+        choices=["table", "json", "csv"],
+        help="Output format (default: table)",
+    )
 
     return parser.parse_args()
 
@@ -227,12 +308,15 @@ def parse_args():
 # Web Search (Tavily API)
 # ---------------------------------------------------------------------------
 
+
 def search_tavily(query, api_key, max_results=20):
     """Search Tavily API and return a list of result dicts."""
     requests = safe_import("requests")
     if not requests:
-        print("Error: 'requests' package is required. Install with: pip install requests",
-              file=sys.stderr)
+        print(
+            "Error: 'requests' package is required. Install with: pip install requests",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     print(f"Searching Tavily for: '{query}'...")
@@ -266,6 +350,7 @@ def search_tavily(query, api_key, max_results=20):
 # Paper identification
 # ---------------------------------------------------------------------------
 
+
 def is_academic_url(url):
     """Check if a URL is likely to be an academic source."""
     try:
@@ -276,8 +361,18 @@ def is_academic_url(url):
                 return True
         # Also check if the URL contains academic path patterns
         path = parsed.path.lower()
-        if any(kw in path for kw in ['/abs/', '/doi/', '/article/', '/paper/',
-                                       '/publication/', '/pmc/', '/pubmed/']):
+        if any(
+            kw in path
+            for kw in [
+                "/abs/",
+                "/doi/",
+                "/article/",
+                "/paper/",
+                "/publication/",
+                "/pmc/",
+                "/pubmed/",
+            ]
+        ):
             return True
         return False
     except Exception:
@@ -323,6 +418,7 @@ def extract_identifiers(url, content_snippet=""):
 # PDF Download
 # ---------------------------------------------------------------------------
 
+
 def find_pdf_link_from_page(url):
     """Fetch an article page and look for the PDF link in meta tags or common patterns.
 
@@ -332,11 +428,17 @@ def find_pdf_link_from_page(url):
     if not requests:
         return None
     try:
-        resp = requests.get(url, timeout=30, allow_redirects=True,
-                           headers={"User-Agent": "Mozilla/5.0 (compatible; LiteratureMiner/1.0)"})
+        resp = requests.get(
+            url,
+            timeout=30,
+            allow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; LiteratureMiner/1.0)"},
+        )
         html = resp.text
         # Look for citation_pdf_url meta tag
-        m = re.search(r'<meta\s+name="citation_pdf_url"\s+content="([^"]+)"', html, re.IGNORECASE)
+        m = re.search(
+            r'<meta\s+name="citation_pdf_url"\s+content="([^"]+)"', html, re.IGNORECASE
+        )
         if m:
             return m.group(1)
         # Look for PDF links in page
@@ -366,19 +468,36 @@ def build_download_urls(identifiers, source_url, scihub_mirror="https://sci-hub.
     if identifiers.get("pmcid"):
         pmcid = identifiers["pmcid"]
         # Europe PMC first (most reliable for open-access PDFs)
-        urls.append(("Europe PMC", f"https://www.ebi.ac.uk/europepmc/webservices/rest/pmc/{pmcid}/fullTextPDF"))
+        urls.append(
+            (
+                "Europe PMC",
+                f"https://www.ebi.ac.uk/europepmc/webservices/rest/pmc/{pmcid}/fullTextPDF",
+            )
+        )
         urls.append(("Europe PMC (alt)", f"https://europepmc.org/articles/{pmcid}/pdf"))
         # NCBI PMC as fallback
-        urls.append(("PubMed Central",
-                     f"https://www.ncbi.nlm.nih.gov/pmc/articles/{pmcid}/pdf/main.pdf"))
+        urls.append(
+            (
+                "PubMed Central",
+                f"https://www.ncbi.nlm.nih.gov/pmc/articles/{pmcid}/pdf/main.pdf",
+            )
+        )
 
     if identifiers.get("pubmed_id"):
         pubmed_id = identifiers["pubmed_id"]
         # Europe PMC supports PubMed IDs too
-        urls.append(("Europe PMC (PMID)",
-                     f"https://www.ebi.ac.uk/europepmc/webservices/rest/MED/{pubmed_id}/fullTextPDF"))
-        urls.append(("Europe PMC (PMID alt)",
-                     f"https://europepmc.org/article/MED/{pubmed_id}?pdf=render"))
+        urls.append(
+            (
+                "Europe PMC (PMID)",
+                f"https://www.ebi.ac.uk/europepmc/webservices/rest/MED/{pubmed_id}/fullTextPDF",
+            )
+        )
+        urls.append(
+            (
+                "Europe PMC (PMID alt)",
+                f"https://europepmc.org/article/MED/{pubmed_id}?pdf=render",
+            )
+        )
 
     if identifiers.get("doi"):
         doi = identifiers["doi"]
@@ -398,7 +517,11 @@ def build_download_urls(identifiers, source_url, scihub_mirror="https://sci-hub.
         urls.append(("Direct PDF", source_url))
 
     # For academic domains without explicit IDs, try source URL anyway
-    if not identifiers.get("doi") and not identifiers.get("arxiv_id") and not identifiers.get("pmcid"):
+    if (
+        not identifiers.get("doi")
+        and not identifiers.get("arxiv_id")
+        and not identifiers.get("pmcid")
+    ):
         if is_academic_url(source_url) and not any(u for _, u in urls):
             urls.append(("Source page", source_url))
 
@@ -413,8 +536,12 @@ def download_pdf(url, dest_path, label):
 
     try:
         print(f"    Trying {label}: {url[:100]}...")
-        resp = requests.get(url, timeout=60, allow_redirects=True,
-                           headers={"User-Agent": "Mozilla/5.0 (compatible; LiteratureMiner/1.0)"})
+        resp = requests.get(
+            url,
+            timeout=60,
+            allow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; LiteratureMiner/1.0)"},
+        )
         if resp.status_code == 200:
             content_type = resp.headers.get("Content-Type", "")
             content = resp.content
@@ -432,7 +559,9 @@ def download_pdf(url, dest_path, label):
                 return True
             elif is_pdf_mime or is_pdf_url:
                 # Content-Type says PDF or URL ends in .pdf, but magic bytes mismatch
-                print(f"    Server claimed PDF but content is not (first bytes: {content[:20]!r})")
+                print(
+                    f"    Server claimed PDF but content is not (first bytes: {content[:20]!r})"
+                )
                 return False
             else:
                 print(f"    Not a PDF (Content-Type: {content_type})")
@@ -490,6 +619,7 @@ def download_paper(identifiers, source_url, paper_dir, scihub_mirror):
 # PDF text extraction
 # ---------------------------------------------------------------------------
 
+
 def extract_pdf_text(pdf_path, max_chars=8000):
     """Extract text from a PDF file. Returns first max_chars characters."""
     # Try PyPDF2 first
@@ -528,12 +658,31 @@ def extract_pdf_text(pdf_path, max_chars=8000):
         except Exception:
             pass
 
+    # Try pypdf (modern PyPDF2 fork) as last fallback
+    pypdf = safe_import("pypdf")
+    if pypdf:
+        try:
+            reader = pypdf.PdfReader(pdf_path)
+            text_parts = []
+            total = 0
+            for page in reader.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    text_parts.append(page_text)
+                    total += len(page_text)
+                    if total >= max_chars:
+                        break
+            return "\n".join(text_parts)[:max_chars]
+        except Exception:
+            pass
+
     return None
 
 
 # ---------------------------------------------------------------------------
 # LLM (DeepSeek) helpers
 # ---------------------------------------------------------------------------
+
 
 def call_deepseek(prompt, api_key, system_prompt=None, temperature=0.3):
     """Call the DeepSeek API (OpenAI-compatible) and return the response text."""
@@ -582,8 +731,10 @@ def summarize_paper(title, source_url, abstract, pdf_text, api_key):
     if not text_content.strip():
         return None, None, []
 
-    system = ("You are a scientific literature analyst. "
-              "Provide concise, accurate summaries in JSON format.")
+    system = (
+        "You are a scientific literature analyst. "
+        "Provide concise, accurate summaries in JSON format."
+    )
 
     prompt = f"""Analyze this scientific paper and provide:
 1. A 2-3 sentence summary of the main contribution
@@ -609,12 +760,14 @@ Respond in this exact JSON format:
     # Try to parse JSON from response
     try:
         # Find JSON block in response
-        json_match = re.search(r'\{[\s\S]*\}', response)
+        json_match = re.search(r"\{[\s\S]*\}", response)
         if json_match:
             data = json.loads(json_match.group())
-            return (data.get("summary", ""),
-                    data.get("key_findings", []),
-                    data.get("keywords", []))
+            return (
+                data.get("summary", ""),
+                data.get("key_findings", []),
+                data.get("keywords", []),
+            )
     except (json.JSONDecodeError, KeyError):
         pass
 
@@ -625,6 +778,7 @@ Respond in this exact JSON format:
 # ---------------------------------------------------------------------------
 # Knowledge Database
 # ---------------------------------------------------------------------------
+
 
 def load_knowledge_db(db_path):
     """Load the knowledge database from a JSON file. Returns dict or None."""
@@ -641,7 +795,7 @@ def load_knowledge_db(db_path):
 def save_knowledge_db(db, db_path):
     """Save the knowledge database to a JSON file."""
     os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
-    with open(db_path, 'w') as f:
+    with open(db_path, "w") as f:
         json.dump(db, f, indent=2, ensure_ascii=False)
 
 
@@ -667,9 +821,15 @@ def add_paper_to_db(db, paper_entry):
     # Check duplicates
     if paper_entry.get("doi") and ("doi", paper_entry["doi"]) in existing_ids:
         return False
-    if paper_entry.get("arxiv_id") and ("arxiv", paper_entry["arxiv_id"]) in existing_ids:
+    if (
+        paper_entry.get("arxiv_id")
+        and ("arxiv", paper_entry["arxiv_id"]) in existing_ids
+    ):
         return False
-    if paper_entry.get("pubmed_id") and ("pubmed", paper_entry["pubmed_id"]) in existing_ids:
+    if (
+        paper_entry.get("pubmed_id")
+        and ("pubmed", paper_entry["pubmed_id"]) in existing_ids
+    ):
         return False
 
     db["papers"].append(paper_entry)
@@ -694,12 +854,12 @@ def search_db(db, query, top_k=None):
 
         # Build searchable text with field weights
         search_fields = [
-            (paper.get("title") or "", 10),        # title: weight 10
-            (paper.get("keywords") or [], 8),       # keywords: weight 8
-            (paper.get("summary") or "", 6),        # summary: weight 6
-            (paper.get("key_findings") or [], 5),   # findings: weight 5
-            (paper.get("abstract") or "", 3),       # abstract: weight 3
-            (paper.get("search_query") or "", 2),   # original query: weight 2
+            (paper.get("title") or "", 10),  # title: weight 10
+            (paper.get("keywords") or [], 8),  # keywords: weight 8
+            (paper.get("summary") or "", 6),  # summary: weight 6
+            (paper.get("key_findings") or [], 5),  # findings: weight 5
+            (paper.get("abstract") or "", 3),  # abstract: weight 3
+            (paper.get("search_query") or "", 2),  # original query: weight 2
         ]
 
         for field, weight in search_fields:
@@ -728,6 +888,7 @@ def search_db(db, query, top_k=None):
 # ---------------------------------------------------------------------------
 # Agent Mode (RAG Q&A)
 # ---------------------------------------------------------------------------
+
 
 def build_agent_context(papers_with_scores):
     """Build a context prompt from retrieved papers."""
@@ -767,7 +928,10 @@ def agent_query(db, question, api_key, top_k=5):
     Returns (answer, retrieved_papers) tuple.
     """
     if not db or not db.get("papers"):
-        return ("No papers in the knowledge database. Run a search first with --query.", [])
+        return (
+            "No papers in the knowledge database. Run a search first with --query.",
+            [],
+        )
 
     # Retrieve top-K relevant papers
     results = search_db(db, question, top_k=top_k)
@@ -780,10 +944,12 @@ def agent_query(db, question, api_key, top_k=5):
     context = build_agent_context(results)
 
     # Build the agent prompt
-    system = ("You are a research assistant with access to a literature database. "
-              "Answer questions based on the provided paper summaries. "
-              "Be concise and cite specific papers using [Paper N] notation. "
-              "If the papers do not contain enough information to answer, say so.")
+    system = (
+        "You are a research assistant with access to a literature database. "
+        "Answer questions based on the provided paper summaries. "
+        "Be concise and cite specific papers using [Paper N] notation. "
+        "If the papers do not contain enough information to answer, say so."
+    )
 
     prompt = f"""Based on the following paper summaries, answer the question.
 
@@ -795,7 +961,10 @@ Answer concisely, citing specific papers with [Paper N]. Include key details fro
 
     answer = call_deepseek(prompt, api_key, system_prompt=system, temperature=0.3)
     if not answer:
-        return ("Failed to generate answer from DeepSeek API.", [(p, s) for p, s in results])
+        return (
+            "Failed to generate answer from DeepSeek API.",
+            [(p, s) for p, s in results],
+        )
 
     return answer, [(p, s) for p, s in results]
 
@@ -865,6 +1034,7 @@ def interactive_agent(db, api_key, top_k):
 # Output formatting
 # ---------------------------------------------------------------------------
 
+
 def print_results_table(papers):
     """Print papers as a formatted table."""
     if not papers:
@@ -915,9 +1085,18 @@ def print_papers_csv(papers):
     """Print papers as CSV."""
     if not papers:
         return
-    fieldnames = ["title", "doi", "arxiv_id", "pubmed_id", "source_url",
-                  "pdf_path", "abstract", "summary", "keywords"]
-    writer = csv.DictWriter(sys.stdout, fieldnames=fieldnames, extrasaction='ignore')
+    fieldnames = [
+        "title",
+        "doi",
+        "arxiv_id",
+        "pubmed_id",
+        "source_url",
+        "pdf_path",
+        "abstract",
+        "summary",
+        "keywords",
+    ]
+    writer = csv.DictWriter(sys.stdout, fieldnames=fieldnames, extrasaction="ignore")
     writer.writeheader()
     for paper, _ in papers:
         row = {k: paper.get(k, "") for k in fieldnames}
@@ -930,21 +1109,26 @@ def print_papers_csv(papers):
 # Mode A: Web Search & Download
 # ---------------------------------------------------------------------------
 
+
 def mode_search_and_download(args):
     """Run the web search, download, and summarize pipeline."""
     # --- API key checks ---
     tavily_key = get_api_key(args.tavily_api_key, "TAVILY_API_KEY")
     if not tavily_key:
-        print("Error: Tavily API key required. Set TAVILY_API_KEY env var or use --tavily-api-key.",
-              file=sys.stderr)
+        print(
+            "Error: Tavily API key required. Set TAVILY_API_KEY env var or use --tavily-api-key.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     deepseek_key = None
     if not args.no_summarize:
         deepseek_key = get_api_key(args.deepseek_api_key, "OPENAI_API_KEY")
         if not deepseek_key:
-            print("Warning: No DeepSeek API key found. Summarization disabled. "
-                  "Set OPENAI_API_KEY env var or use --deepseek-api-key.")
+            print(
+                "Warning: No DeepSeek API key found. Summarization disabled. "
+                "Set OPENAI_API_KEY env var or use --deepseek-api-key."
+            )
             args.no_summarize = True
 
     # --- Setup ---
@@ -988,7 +1172,7 @@ def mode_search_and_download(args):
                 all_results.append(r)
         print(f"  Query '{q[:60]}...' → {len(results)} results")
 
-    results = all_results[:args.max_results]
+    results = all_results[: args.max_results]
     print(f"  Total unique results: {len(results)}")
 
     if not results:
@@ -1027,7 +1211,12 @@ def mode_search_and_download(args):
                 "pmcid": identifiers["pmcid"],
             }
             papers_meta.append(paper)
-            id_str = identifiers["doi"] or identifiers["arxiv_id"] or identifiers["pubmed_id"] or "no-id"
+            id_str = (
+                identifiers["doi"]
+                or identifiers["arxiv_id"]
+                or identifiers["pubmed_id"]
+                or "no-id"
+            )
             print(f"  [{len(papers_meta)}] {title[:80]}...")
             print(f"      ID: {id_str} | URL: {url[:80]}...")
 
@@ -1057,8 +1246,9 @@ def mode_search_and_download(args):
             }
 
             print(f"  [{downloads + 1}] {paper['title'][:80]}...")
-            pdf_path = download_paper(identifiers, paper["source_url"],
-                                      paper_dir, args.scihub_mirror)
+            pdf_path = download_paper(
+                identifiers, paper["source_url"], paper_dir, args.scihub_mirror
+            )
             if pdf_path:
                 pdf_map[paper["id"]] = pdf_path
                 downloads += 1
@@ -1080,8 +1270,11 @@ def mode_search_and_download(args):
                 pdf_text = extract_pdf_text(pdf_path)
 
             summary, findings, keywords = summarize_paper(
-                paper["title"], paper["source_url"],
-                paper.get("abstract", ""), pdf_text, deepseek_key
+                paper["title"],
+                paper["source_url"],
+                paper.get("abstract", ""),
+                pdf_text,
+                deepseek_key,
             )
             paper["summary"] = summary or ""
             paper["key_findings"] = findings
@@ -1126,12 +1319,14 @@ def mode_search_and_download(args):
             new_count += 1
 
     # Record search history
-    db["search_history"].append({
-        "query": args.query,
-        "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "results_count": len(papers_meta),
-        "new_papers": new_count,
-    })
+    db["search_history"].append(
+        {
+            "query": args.query,
+            "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "results_count": len(papers_meta),
+            "new_papers": new_count,
+        }
+    )
 
     save_knowledge_db(db, db_path)
     print(f"  Added {new_count} new papers to database")
@@ -1154,14 +1349,19 @@ def mode_search_and_download(args):
     print(f"  PDFs downloaded:   {len(pdf_map)}")
     print(f"  Database:          {db_path}")
     print(f"\nTo query the database:")
-    print(f"  python tools/literature_miner.py --query-db \"<keyword>\" --db-path {db_path}")
+    print(
+        f'  python tools/literature_miner.py --query-db "<keyword>" --db-path {db_path}'
+    )
     print(f"To ask questions in agent mode:")
-    print(f"  python tools/literature_miner.py --agent --question \"<question>\" --db-path {db_path}")
+    print(
+        f'  python tools/literature_miner.py --agent --question "<question>" --db-path {db_path}'
+    )
 
 
 # ---------------------------------------------------------------------------
 # Mode B: Database Search
 # ---------------------------------------------------------------------------
+
 
 def mode_query_db(args):
     """Search the local knowledge database."""
@@ -1200,6 +1400,7 @@ def mode_query_db(args):
 # Mode C: Agent RAG Q&A
 # ---------------------------------------------------------------------------
 
+
 def mode_agent(args):
     """Run agent/RAG mode for Q&A over the knowledge database."""
     db_path = args.db_path
@@ -1219,8 +1420,11 @@ def mode_agent(args):
 
     deepseek_key = get_api_key(args.deepseek_api_key, "OPENAI_API_KEY")
     if not deepseek_key:
-        print("Error: DeepSeek API key required for agent mode. "
-              "Set OPENAI_API_KEY env var or use --deepseek-api-key.", file=sys.stderr)
+        print(
+            "Error: DeepSeek API key required for agent mode. "
+            "Set OPENAI_API_KEY env var or use --deepseek-api-key.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     if args.agent_interactive:
@@ -1228,8 +1432,10 @@ def mode_agent(args):
         return
 
     if not args.question:
-        print("Error: --question is required for agent mode (unless using --agent-interactive).",
-              file=sys.stderr)
+        print(
+            "Error: --question is required for agent mode (unless using --agent-interactive).",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     print(f"\n{'=' * 60}")
@@ -1267,23 +1473,166 @@ def mode_agent(args):
 
 
 # ---------------------------------------------------------------------------
+# Mode D: PDF Directory Ingestion
+# ---------------------------------------------------------------------------
+
+
+def hash_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        while True:
+            chunk = f.read(65536)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def mode_pdf_dir(args):
+    pdf_dir = os.path.abspath(args.pdf_dir)
+    if not os.path.isdir(pdf_dir):
+        print(f"Error: PDF directory not found: {pdf_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    deepseek_key = get_api_key(args.deepseek_api_key, "OPENAI_API_KEY")
+    if not deepseek_key:
+        print(
+            "Error: DeepSeek API key required for PDF ingestion. "
+            "Set OPENAI_API_KEY env var or use --deepseek-api-key.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    db_path = args.db_path or os.path.join(
+        os.path.dirname(pdf_dir), "knowledge_db.json"
+    )
+
+    db = load_knowledge_db(db_path)
+    if db is None:
+        db = init_knowledge_db()
+
+    existing_hashes = set()
+    for p in db.get("papers", []):
+        fh = p.get("file_hash")
+        if fh:
+            existing_hashes.add(fh)
+
+    pdf_files = sorted(
+        [
+            os.path.join(pdf_dir, f)
+            for f in os.listdir(pdf_dir)
+            if f.lower().endswith(".pdf")
+        ]
+    )
+
+    if not pdf_files:
+        print(f"No PDF files found in {pdf_dir}")
+        return
+
+    print(f"{'=' * 60}")
+    print("PDF DIRECTORY INGESTION")
+    print(f"{'=' * 60}")
+    print(f"Source dir: {pdf_dir}")
+    print(f"PDFs found: {len(pdf_files)}")
+    print(f"Database:   {db_path} ({len(db['papers'])} existing papers)")
+    print(f"Skip existing: {args.pdf_skip_existing}")
+    print()
+
+    new_count = 0
+    skipped_count = 0
+    for pdf_path in pdf_files:
+        fname = os.path.basename(pdf_path)
+
+        file_hash = hash_file(pdf_path)
+        if args.pdf_skip_existing and file_hash in existing_hashes:
+            print(f"  [SKIP] {fname} (already in database)")
+            skipped_count += 1
+            continue
+
+        print(f"  [{new_count + 1}] {fname}")
+
+        pdf_text = extract_pdf_text(pdf_path, max_chars=args.pdf_max_chars)
+        if not pdf_text:
+            print(f"    Could not extract text, skipping")
+            continue
+
+        summary, findings, keywords = summarize_paper(
+            fname, pdf_path, "", pdf_text, deepseek_key
+        )
+        if not summary:
+            print(f"    Summarization failed, storing raw text excerpt")
+            summary = pdf_text[:300]
+
+        entry = {
+            "id": file_hash[:12],
+            "title": fname,
+            "authors": [],
+            "abstract": "",
+            "source_url": pdf_path,
+            "doi": None,
+            "arxiv_id": None,
+            "pubmed_id": None,
+            "pdf_path": pdf_path,
+            "file_hash": file_hash,
+            "keywords": keywords,
+            "summary": summary,
+            "key_findings": findings,
+            "search_query": "",
+            "date_added": datetime.now().strftime("%Y-%m-%d"),
+        }
+
+        if add_paper_to_db(db, entry):
+            new_count += 1
+            existing_hashes.add(file_hash)
+            print(f"    Added to database")
+        else:
+            print(f"    Already in database (duplicate ID)")
+
+    # Record search history entry for this ingestion
+    db["search_history"].append(
+        {
+            "query": f"pdf-dir:{pdf_dir}",
+            "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "results_count": len(pdf_files),
+            "new_papers": new_count,
+        }
+    )
+
+    save_knowledge_db(db, db_path)
+    print()
+    print(f"{'=' * 60}")
+    print(f"Ingestion complete.")
+    print(f"  Total PDFs in dir: {len(pdf_files)}")
+    print(f"  Newly added:       {new_count}")
+    print(f"  Skipped (cached):  {skipped_count}")
+    print(f"  Database entries:  {len(db['papers'])}")
+    print(f"  Database:          {db_path}")
+    print(f"{'=' * 60}")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 def main():
     # Load .env file from repo root before anything else
     load_env_file()
     args = parse_args()
 
-    if args.agent:
+    if args.pdf_dir:
+        mode_pdf_dir(args)
+    elif args.agent:
         mode_agent(args)
     elif args.query_db:
         mode_query_db(args)
     elif args.query:
         mode_search_and_download(args)
     else:
-        print("Error: Must specify one of --query, --query-db, or --agent.",
-              file=sys.stderr)
+        print(
+            "Error: Must specify one of --query, --query-db, or --agent.",
+            file=sys.stderr,
+        )
         print("Use --help for usage information.", file=sys.stderr)
         sys.exit(1)
 
