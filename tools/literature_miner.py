@@ -311,10 +311,11 @@ def parse_args():
 
 def search_tavily(query, api_key, max_results=20):
     """Search Tavily API and return a list of result dicts."""
-    requests = safe_import("requests")
-    if not requests:
+    try:
+        import requests
+    except ImportError as e:
         print(
-            "Error: 'requests' package is required. Install with: pip install requests",
+            f"Error: 'requests' package is required ({e}). Install with: pip install requests",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -720,9 +721,10 @@ def extract_pdf_text(pdf_path, max_chars=8000):
 
 def call_deepseek(prompt, api_key, system_prompt=None, temperature=0.3):
     """Call the DeepSeek API (OpenAI-compatible) and return the response text."""
-    requests = safe_import("requests")
-    if not requests:
-        print("Error: 'requests' package is required.", file=sys.stderr)
+    try:
+        import requests
+    except ImportError as e:
+        print(f"Error: 'requests' package is required ({e}).", file=sys.stderr)
         return None
 
     messages = []
