@@ -620,23 +620,52 @@ def download_paper(identifiers, source_url, paper_dir, scihub_mirror):
 # ---------------------------------------------------------------------------
 
 
+def is_valid_pdf(path):
+    """Quick check if a file starts with the PDF magic bytes."""
+    try:
+        with open(path, "rb") as f:
+            return f.read(5) == b"%PDF-"
+    except Exception:
+        return False
+
+
 def extract_pdf_text(pdf_path, max_chars=8000):
-    """Extract text from a PDF file. Returns first max_chars characters."""
+    """Extract text from a PDF file. Returns first max_chars characters.
+
+    Returns None if the file is not a valid PDF or has no extractable text.
+    """
+    if not is_valid_pdf(pdf_path):
+        return None
+
+    import contextlib
+
+    # Suppress pypdf's stderr noise
+    stderr_null = open(os.devnull, "w")
+
+    def _try_extract(reader):
+        text_parts = []
+        total = 0
+        for page in reader.pages:
+            page_text = page.extract_text()
+            if page_text:
+                text_parts.append(page_text)
+                total += len(page_text)
+                if total >= max_chars:
+                    break
+        return "\n".join(text_parts)[:max_chars] if text_parts else None
+
     # Try PyPDF2 first
     PyPDF2 = safe_import("PyPDF2")
     if PyPDF2:
         try:
-            reader = PyPDF2.PdfReader(pdf_path)
-            text_parts = []
-            total = 0
-            for page in reader.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    text_parts.append(page_text)
-                    total += len(page_text)
-                    if total >= max_chars:
-                        break
-            return "\n".join(text_parts)[:max_chars]
+            with (
+                contextlib.redirect_stderr(stderr_null),
+                contextlib.redirect_stdout(stderr_null),
+            ):
+                reader = PyPDF2.PdfReader(pdf_path)
+                result = _try_extract(reader)
+            if result:
+                return result
         except Exception:
             pass
 
@@ -644,17 +673,23 @@ def extract_pdf_text(pdf_path, max_chars=8000):
     pdfplumber = safe_import("pdfplumber")
     if pdfplumber:
         try:
-            text_parts = []
-            total = 0
-            with pdfplumber.open(pdf_path) as pdf:
-                for page in pdf.pages:
-                    page_text = page.extract_text()
-                    if page_text:
-                        text_parts.append(page_text)
-                        total += len(page_text)
-                        if total >= max_chars:
-                            break
-            return "\n".join(text_parts)[:max_chars]
+            with (
+                contextlib.redirect_stderr(stderr_null),
+                contextlib.redirect_stdout(stderr_null),
+            ):
+                with pdfplumber.open(pdf_path) as pdf:
+                    text_parts = []
+                    total = 0
+                    for page in pdf.pages:
+                        page_text = page.extract_text()
+                        if page_text:
+                            text_parts.append(page_text)
+                            total += len(page_text)
+                            if total >= max_chars:
+                                break
+                    result = "\n".join(text_parts)[:max_chars] if text_parts else None
+            if result:
+                return result
         except Exception:
             pass
 
@@ -662,19 +697,22 @@ def extract_pdf_text(pdf_path, max_chars=8000):
     pypdf = safe_import("pypdf")
     if pypdf:
         try:
-            reader = pypdf.PdfReader(pdf_path)
-            text_parts = []
-            total = 0
-            for page in reader.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    text_parts.append(page_text)
-                    total += len(page_text)
-                    if total >= max_chars:
-                        break
-            return "\n".join(text_parts)[:max_chars]
+            with (
+                contextlib.redirect_stderr(stderr_null),
+                contextlib.redirect_stdout(stderr_null),
+            ):
+                reader = pypdf.PdfReader(pdf_path)
+                result = _try_extract(reader)
+            if result:
+                return result
         except Exception:
             pass
+
+    # Cleanup
+    try:
+        stderr_null.close()
+    except Exception:
+        pass
 
     return None
 
