@@ -3,17 +3,18 @@
 Protocol: RFDiffusion3 → Chai-1 → ProteinMPNN → ESM-IF
 
 Pipeline:
-  1. RFDiffusion3: backbone generation for fragment design
-  2. Chai-1: structure prediction (SLURM), select top M
-  3. ProteinMPNN: for each top structure, L iterations of sequence design
+  1. RFDiffusion3: backbone generation across multiple rounds
+  2. Collect all designs, deduplicate by designed-region sequences
+  3. Chai-1: structure prediction (SLURM), select top M
+  4. ProteinMPNN: for each top structure, L iterations of sequence design
      with 1-k randomly selected residues from the designed fragment
-  4. ESM-IF: score designed sequences and rank
-  5. Report best sequences in CSV
+  5. ESM-IF: score designed sequences and rank
+  6. Report best sequences in CSV
 
 Usage:
   python protocols/fragment_design_mpnn.py \\
     --pdb input.pdb --design-regions "A90-120:20-30" \\
-    --num-designs 50 --chai1-top 5 --mpnn-k 5 --mpnn-l 10 \\
+    --num-rounds 3 --num-designs 50 --chai1-top 5 --mpnn-k 5 --mpnn-l 10 \\
     --output ./results
 """
 
@@ -26,21 +27,16 @@ sys.path.insert(0, str(REPO_ROOT / 'tools'))
 from _config import load_config
 from chai1_tool import submit_chai1_slurm, check_job_status, extract_all_scores
 from proteinmpnn_tool import run_design, parse_design_output
+from design_utils import (
+    composite_rank, collect_designs_from_rounds,
+    deduplicate_designs, write_unique_fastas,
+)
 
 RFD3_SCRIPT = str(REPO_ROOT / 'tools' / 'rfdiffusion3_tool.py')
 
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
-
-def composite_rank(d):
-    return (int(d.get('n_chainbreaks', 0)) * 100 +
-            int(d.get('n_clashing', 0)) * 10 +
-            abs(float(d.get('radius_of_gyration', 0)) - 12) * 0.1 +
-            float(d.get('alanine_content', 0)) * 10 +
-            abs(float(d.get('glycine_content', 0)) - 0.05) * 10 +
-            float(d.get('max_ca_deviation', 0)))
-
 
 def parse_design_regions(spec):
     """Parse 'A90-120:20-30' into [(chain, start, end), ...]."""
@@ -150,8 +146,8 @@ def esmif_score(pdb_file, mutations, esmif_python, esmif_script, work_dir):
 # Phase helpers
 # ---------------------------------------------------------------------------
 
-def run_rfd3(args, rfd3_out, config_path):
-    """Run RFDiffusion3 as subprocess."""
+def build_rfd3_cmd(args, rfd3_out, config_path):
+    """Build the RFDiffusion3 subprocess command list."""
     cmd = [sys.executable, RFD3_SCRIPT, '--pdb', args.pdb,
            '--design-regions', args.design_regions,
            '--num-designs', str(args.num_designs),
@@ -163,40 +159,43 @@ def run_rfd3(args, rfd3_out, config_path):
         cmd.append('--local')
     else:
         cmd += ['--slurm-partition', args.slurm_partition, '--ncpus', str(args.ncpus)]
-    print(f'[Phase 1] RFDiffusion3: {args.num_designs} designs')
-    sp.run(cmd, check=True)
+    return cmd
 
 
-def run_chai1_batch(designs, rfd3_out, chai1_out, cfg, args):
-    """Submit Chai-1 jobs for each design, wait, extract scores. Returns list of dicts."""
+def run_chai1_batch(designs, fasta_dir, chai1_out, cfg, args):
+    """Submit Chai-1 jobs for each design, wait, extract scores. Returns list of dicts.
+
+    Args:
+        designs: list of design dicts, each with '_tag' and '_unique_fasta'
+        fasta_dir: directory containing per-design FASTA files
+    """
     os.makedirs(chai1_out, exist_ok=True)
     chai1_run = os.path.join(cfg['chai1']['chai1_dir'], 'run.sh')
     slurm_submit = cfg['slurm']['submit_script']
-    fasta_dir = os.path.join(rfd3_out, 'top_designs_fastas')
 
     print(f'[Phase 2] Chai-1: {len(designs)} jobs')
     jobs = {}
     for d in designs:
-        name = d['design_name']
-        fasta = os.path.join(fasta_dir, f'{name}.fasta')
+        tag = d.get('_tag', d['design_name'])
+        fasta = d.get('_unique_fasta', os.path.join(fasta_dir, f'{tag}.fasta'))
         if not os.path.exists(fasta):
-            print(f'  SKIP {name}: no FASTA'); continue
-        out_dir = os.path.join(chai1_out, name)
+            print(f'  SKIP {tag}: no FASTA'); continue
+        out_dir = os.path.join(chai1_out, tag)
         jid = submit_chai1_slurm(fasta, out_dir, slurm_partition=args.slurm_partition,
                                  ncpus=args.ncpus, chai1_run=chai1_run,
                                  slurm_submit=slurm_submit)
         if jid:
-            jobs[jid] = (name, out_dir)
+            jobs[jid] = (tag, out_dir)
 
     total = len(jobs)
     while jobs:
         done = []
-        for jid, (name, out_dir) in jobs.items():
+        for jid, (tag, out_dir) in jobs.items():
             st = check_job_status(jid)
             if st in ('COMPLETED', 'CD', 'COMPLETING'):
                 done.append(jid)
             elif st in ('FAILED', 'F', 'CANCELLED', 'CA', 'TIMEOUT', 'TO'):
-                print(f'  {name}: FAILED ({st})'); done.append(jid)
+                print(f'  {tag}: FAILED ({st})'); done.append(jid)
         for jid in done:
             del jobs[jid]
         if jobs:
@@ -206,10 +205,11 @@ def run_chai1_batch(designs, rfd3_out, chai1_out, cfg, args):
 
     results = []
     for d in designs:
-        name, out_dir = d['design_name'], os.path.join(chai1_out, d['design_name'])
-        scores = extract_all_scores(name, out_dir)
+        tag = d.get('_tag', d['design_name'])
+        out_dir = os.path.join(chai1_out, tag)
+        scores = extract_all_scores(tag, out_dir)
         if scores:
-            results.append({'design_name': name, 'out_dir': out_dir,
+            results.append({'design_name': tag, 'out_dir': out_dir,
                             'plddt': scores.get('best_plddt', 0),
                             'iptm': scores.get('best_iptm', 0),
                             'best_model': scores.get('best_model', 0)})
@@ -227,10 +227,12 @@ def parse_args():
     p.add_argument('--pdb', required=True)
     p.add_argument('--design-regions', required=True,
                    help='Fragment spec: <chain><start>-<end>:<len_min>-<len_max>[;...]')
+    p.add_argument('--num-rounds', type=int, default=1,
+                   help='Number of independent RFD3 rounds (default: 1)')
     p.add_argument('--num-designs', type=int, default=50,
-                   help='RFD3 designs (default: 50)')
+                   help='RFD3 designs per round (default: 50)')
     p.add_argument('--chai1-top', type=int, default=5,
-                   help='Top RFD3 designs to validate with Chai-1 (default: 5)')
+                   help='Top unique RFD3 designs to validate with Chai-1 (default: 5)')
     p.add_argument('--mpnn-k', type=int, default=5,
                    help='Max random residues per ProteinMPNN iteration (default: 5)')
     p.add_argument('--mpnn-l', type=int, default=10,
@@ -256,29 +258,44 @@ def main():
     os.makedirs(args.output, exist_ok=True)
     regions = parse_design_regions(args.design_regions)
 
-    # Phase 1: RFDiffusion3
-    rfd3_out = os.path.join(args.output, 'rfd3_designs')
-    run_rfd3(args, rfd3_out, args.config)
+    # Phase 1: RFDiffusion3 backbone generation (N rounds)
+    round_dirs = []
+    for r in range(1, args.num_rounds + 1):
+        rfd3_out = os.path.join(args.output, f'rfd3_round_{r}')
+        print(f'\n[Phase 1] RFDiffusion3 round {r}/{args.num_rounds} '
+              f'({args.num_designs} designs)')
+        cmd = build_rfd3_cmd(args, rfd3_out, args.config)
+        try:
+            sp.run(cmd, check=True)
+            round_dirs.append(rfd3_out)
+        except sp.CalledProcessError:
+            print(f'  WARNING: round {r} failed, continuing with remaining rounds')
 
-    # Phase 2: Select top designs by composite score
-    csv_path = os.path.join(rfd3_out, 'rfd3_scores.csv')
-    with open(csv_path) as f:
-        designs = list(csv.DictReader(f))
-    for d in designs:
-        d['_score'] = composite_rank(d)
-    designs.sort(key=lambda d: d['_score'])
-    top_chai1 = designs[:args.chai1_top]
-    print(f'[Phase 2] Selected top {len(top_chai1)}/{len(designs)} designs for Chai-1')
+    if not round_dirs:
+        print('ERROR: all RFD3 rounds failed.'); sys.exit(1)
 
-    # Phase 3: Chai-1 structure prediction
+    # Collect all designs, deduplicate, select top designs for Chai-1
+    all_designs, chain_meta = collect_designs_from_rounds(round_dirs)
+    if not all_designs:
+        print('ERROR: no designs collected from any round.'); sys.exit(1)
+
+    unique = deduplicate_designs(all_designs, chain_meta)
+    top_chai1 = unique[:args.chai1_top]
+    print(f'[Phase 1b] Selected top {len(top_chai1)}/{len(unique)} unique designs for Chai-1')
+
+    # Write unique FASTA files for Chai-1
+    unique_fasta_dir = write_unique_fastas(top_chai1,
+                                           os.path.join(args.output, 'unique_designs'))
+
+    # Phase 2: Chai-1 structure prediction
     chai1_out = os.path.join(args.output, 'chai1_preds')
-    chai1_results = run_chai1_batch(top_chai1, rfd3_out, chai1_out, cfg, args)
+    chai1_results = run_chai1_batch(top_chai1, unique_fasta_dir, chai1_out, cfg, args)
     chai1_results.sort(key=lambda r: r['plddt'], reverse=True)
 
     if not chai1_results:
         print('No Chai-1 results. Exiting.'); return
 
-    # Phase 4: ProteinMPNN + ESM-IF
+    # Phase 3: ProteinMPNN + ESM-IF
     mpnn_out = os.path.join(args.output, 'mpnn_designs')
     os.makedirs(mpnn_out, exist_ok=True)
     esmif_work = os.path.join(args.output, 'esmif_scores')
@@ -294,7 +311,7 @@ def main():
 
     all_designs = []  # (chai1_name, iter, seq, mpnn_score, esmif_score, mutations)
 
-    print(f'\n[Phase 4] ProteinMPNN + ESM-IF on top {len(chai1_results)} structures')
+    print(f'\n[Phase 3] ProteinMPNN + ESM-IF on top {len(chai1_results)} structures')
     for cr in chai1_results:
         name = cr['design_name']
         # Convert best CIF to PDB
@@ -362,12 +379,12 @@ def main():
             print(f'    iter {iteration:02d}: positions={pos_str}, '
                   f'mutations={len(mutations)}, esmif_total={esmif_total:.3f}')
 
-    # Phase 5: Report
+    # Phase 4: Report
     if not all_designs:
         print('\nNo designs generated. Exiting.'); return
 
     all_designs.sort(key=lambda d: d['esmif_total'])
-    print(f'\n[Phase 5] Top designs by ESM-IF score (lower = better):')
+    print(f'\n[Phase 4] Top designs by ESM-IF score (lower = better):')
     for i, d in enumerate(all_designs[:20]):
         print(f'  {i+1:3d}. {d["chai1_design"]:30s} iter={d["iteration"]:02d}  '
               f'mpnn={d["mpnn_score"]:.3f}  esmif_total={d["esmif_total"]:.3f}  '

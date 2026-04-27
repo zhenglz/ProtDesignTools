@@ -3,15 +3,16 @@
 Protocol: RFDiffusion3 Backbone Design → Chai-1 Structure Validation.
 
 Pipeline:
-  1. RFDiffusion3: generate N backbone designs for specified region(s)
-  2. Select top M by composite score
-  3. Chai-1: predict structures for top M designs (SLURM)
-  4. Rank by pLDDT * iPTM, select top K
+  1. RFDiffusion3: generate N backbone designs across multiple rounds
+  2. Collect all designs, deduplicate by designed-region sequences
+  3. Select top M unique designs by composite score
+  4. Chai-1: predict structures for top M designs (SLURM)
+  5. Rank by pLDDT * iPTM, select top K
 
 Usage:
   python protocols/design_validate.py \\
     --pdb input.pdb --design-regions "A90-95:5-5" \\
-    --num-designs 50 --top-m 10 --top-k 3 --output ./results
+    --num-rounds 3 --num-designs 50 --top-m 20 --top-k 5 --output ./results
 """
 
 import argparse, csv, os, sys, subprocess as sp, time
@@ -22,22 +23,12 @@ sys.path.insert(0, str(REPO_ROOT / 'tools'))
 
 from _config import load_config
 from chai1_tool import submit_chai1_slurm, check_job_status, extract_all_scores
+from design_utils import (
+    composite_rank, collect_designs_from_rounds,
+    deduplicate_designs, write_unique_fastas,
+)
 
 RFD3_SCRIPT = str(REPO_ROOT / 'tools' / 'rfdiffusion3_tool.py')
-
-
-# ---------------------------------------------------------------------------
-# Composite rank (same formula as rfdiffusion3_tool.py — lower = better)
-# ---------------------------------------------------------------------------
-def composite_rank(d):
-    return (
-        int(d.get('n_chainbreaks', 0)) * 100 +
-        int(d.get('n_clashing', 0)) * 10 +
-        abs(float(d.get('radius_of_gyration', 0)) - 12) * 0.1 +
-        float(d.get('alanine_content', 0)) * 10 +
-        abs(float(d.get('glycine_content', 0)) - 0.05) * 10 +
-        float(d.get('max_ca_deviation', 0))
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -52,10 +43,12 @@ def parse_args():
     p.add_argument('--pdb', required=True, help='Input PDB file')
     p.add_argument('--design-regions', required=True,
                    help='Design regions: <chain><start>-<end>:<len_min>-<len_max>[;...]')
+    p.add_argument('--num-rounds', type=int, default=1,
+                   help='Number of independent RFD3 rounds (default: 1)')
     p.add_argument('--num-designs', type=int, default=50,
-                   help='RFD3 designs to generate (default: 50)')
+                   help='RFD3 designs per round (default: 50)')
     p.add_argument('--top-m', type=int, default=10,
-                   help='Top designs to validate with Chai-1 (default: 10)')
+                   help='Top unique designs to validate with Chai-1 (default: 10)')
     p.add_argument('--top-k', type=int, default=3,
                    help='Final top designs to report (default: 3)')
     p.add_argument('--output', '-o', default='./protocol_out')
@@ -72,8 +65,8 @@ def parse_args():
 # Phase helpers
 # ---------------------------------------------------------------------------
 
-def run_rfd3(args, rfd3_out, config_path):
-    """Run RFDiffusion3 as subprocess and return output directory."""
+def build_rfd3_cmd(args, rfd3_out, config_path):
+    """Build the RFDiffusion3 subprocess command list."""
     cmd = [
         sys.executable, RFD3_SCRIPT,
         '--pdb', args.pdb,
@@ -90,52 +83,42 @@ def run_rfd3(args, rfd3_out, config_path):
     else:
         cmd += ['--slurm-partition', args.slurm_partition,
                 '--ncpus', str(args.ncpus)]
-
-    print(f'[Phase 1] Running RFDiffusion3 ({args.num_designs} designs)...')
-    sp.run(cmd, check=True)
-    return rfd3_out
+    return cmd
 
 
-def load_rfd3_scores(rfd3_out):
-    """Read rfd3_scores.csv, return list of dicts with composite score."""
-    csv_path = os.path.join(rfd3_out, 'rfd3_scores.csv')
-    if not os.path.exists(csv_path):
-        print(f'ERROR: scores CSV not found at {csv_path}')
-        sys.exit(1)
-    designs = []
-    with open(csv_path) as f:
-        for row in csv.DictReader(f):
-            row['_score'] = composite_rank(row)
-            designs.append(row)
-    return designs
+def run_chai1_batch(designs, fasta_dir, chai1_out, cfg, args):
+    """Submit Chai-1 SLURM jobs for each design, wait, extract scores.
 
-
-def run_chai1_batch(designs, rfd3_out, chai1_out, cfg, args):
-    """Submit Chai-1 SLURM jobs for each design, wait, extract scores."""
+    Args:
+        designs: list of design dicts, each with '_tag' and '_unique_fasta'
+        fasta_dir: directory containing per-design FASTA files
+        chai1_out: output directory for Chai-1 predictions
+        cfg: config dict
+        args: CLI args (for slurm_partition, ncpus, local)
+    """
     os.makedirs(chai1_out, exist_ok=True)
     chai1_run = os.path.join(cfg['chai1']['chai1_dir'], 'run.sh')
     slurm_submit = cfg['slurm']['submit_script']
-    fasta_dir = os.path.join(rfd3_out, 'top_designs_fastas')
 
     print(f'[Phase 3] Submitting Chai-1 jobs for {len(designs)} designs...')
 
     # Submit all jobs
-    jobs = {}  # job_id -> (name, out_dir)
+    jobs = {}  # job_id -> (tag, out_dir)
     for d in designs:
-        name = d['design_name']
-        fasta = os.path.join(fasta_dir, f'{name}.fasta')
+        tag = d.get('_tag', d['design_name'])
+        fasta = d.get('_unique_fasta', os.path.join(fasta_dir, f'{tag}.fasta'))
         if not os.path.exists(fasta):
-            print(f'  SKIP {name}: no FASTA found')
+            print(f'  SKIP {tag}: no FASTA found')
             continue
-        out_dir = os.path.join(chai1_out, name)
+        out_dir = os.path.join(chai1_out, tag)
         jid = submit_chai1_slurm(
             fasta, out_dir,
             slurm_partition=args.slurm_partition, ncpus=args.ncpus,
             chai1_run=chai1_run, slurm_submit=slurm_submit,
         )
         if jid:
-            jobs[jid] = (name, out_dir)
-            print(f'  {name}: submitted (job {jid})')
+            jobs[jid] = (tag, out_dir)
+            print(f'  {tag}: submitted (job {jid})')
 
     if not jobs:
         print('No jobs submitted.')
@@ -145,12 +128,12 @@ def run_chai1_batch(designs, rfd3_out, chai1_out, cfg, args):
     total = len(jobs)
     while jobs:
         done = []
-        for jid, (name, out_dir) in jobs.items():
+        for jid, (tag, out_dir) in jobs.items():
             st = check_job_status(jid)
             if st in ('COMPLETED', 'CD', 'COMPLETING'):
                 done.append(jid)
             elif st in ('FAILED', 'F', 'CANCELLED', 'CA', 'TIMEOUT', 'TO'):
-                print(f'  {name}: FAILED ({st})')
+                print(f'  {tag}: FAILED ({st})')
                 done.append(jid)
         for jid in done:
             del jobs[jid]
@@ -162,12 +145,13 @@ def run_chai1_batch(designs, rfd3_out, chai1_out, cfg, args):
     # Extract scores
     results = []
     for d in designs:
-        name = d['design_name']
-        out_dir = os.path.join(chai1_out, name)
-        scores = extract_all_scores(name, out_dir)
+        tag = d.get('_tag', d['design_name'])
+        out_dir = os.path.join(chai1_out, tag)
+        scores = extract_all_scores(tag, out_dir)
         if scores:
             results.append({
-                'design_name': name,
+                'design_name': tag,
+                'orig_name': d['design_name'],
                 'plddt': scores.get('best_plddt', 0),
                 'ptm': scores.get('best_ptm', 0),
                 'iptm': scores.get('best_iptm', 0),
@@ -181,9 +165,10 @@ def write_final_results(results, output_dir):
     csv_path = os.path.join(output_dir, 'final_topk.csv')
     with open(csv_path, 'w', newline='') as f:
         w = csv.writer(f)
-        w.writerow(['rank', 'design_name', 'plddt', 'ptm', 'iptm', 'combined'])
+        w.writerow(['rank', 'design_name', 'orig_name', 'plddt', 'ptm', 'iptm', 'combined'])
         for i, r in enumerate(results, 1):
-            w.writerow([i, r['design_name'], r['plddt'], r['ptm'], r['iptm'], r['combined']])
+            w.writerow([i, r['design_name'], r.get('orig_name', ''),
+                        r['plddt'], r['ptm'], r['iptm'], r['combined']])
     print(f'\nResults saved to {csv_path}')
 
 
@@ -195,27 +180,54 @@ def main():
     cfg = load_config(args.config)
     os.makedirs(args.output, exist_ok=True)
 
-    rfd3_out = os.path.join(args.output, 'rfd3_designs')
+    # Phase 1: RFDiffusion3 backbone generation (N rounds)
+    round_dirs = []
+    for r in range(1, args.num_rounds + 1):
+        rfd3_out = os.path.join(args.output, f'rfd3_round_{r}')
+        print(f'\n[Phase 1] RFDiffusion3 round {r}/{args.num_rounds} '
+              f'({args.num_designs} designs)')
+        cmd = build_rfd3_cmd(args, rfd3_out, args.config)
+        try:
+            sp.run(cmd, check=True)
+            round_dirs.append(rfd3_out)
+        except sp.CalledProcessError:
+            print(f'  WARNING: round {r} failed, continuing with remaining rounds')
 
-    # Phase 1: RFDiffusion3 backbone generation
-    run_rfd3(args, rfd3_out, args.config)
+    if not round_dirs:
+        print('ERROR: all RFD3 rounds failed.')
+        sys.exit(1)
 
-    # Phase 2: Select top M designs by composite score
-    designs = load_rfd3_scores(rfd3_out)
-    designs.sort(key=lambda d: d['_score'])
-    top_m = designs[:args.top_m]
-    print(f'[Phase 2] Selected top {len(top_m)}/{len(designs)} designs:')
+    # Phase 2: Collect all designs, deduplicate, select top M
+    all_designs, chain_meta = collect_designs_from_rounds(round_dirs)
+    if not all_designs:
+        print('ERROR: no designs collected from any round.')
+        sys.exit(1)
+
+    unique = deduplicate_designs(all_designs, chain_meta)
+
+    # Select top M unique designs
+    top_m = unique[:args.top_m]
+    print(f'\n[Phase 2] Selected top {len(top_m)}/{len(unique)} unique designs:')
     for i, d in enumerate(top_m):
-        print(f'  {i+1}. {d["design_name"]}  score={d["_score"]:.1f}')
+        info = f'  {i+1}. {d["design_name"]}  score={d["_score"]:.1f}'
+        if d.get('_dedup_group_size', 1) > 1:
+            info += f'  (from {d["_dedup_group_size"]} duplicates)'
+        print(info)
 
     if not top_m:
         print('No designs selected. Exiting.')
         return
 
-    # Phase 3: Chai-1 prediction + Phase 4: Final ranking
-    results = run_chai1_batch(top_m, rfd3_out,
+    # Write unique FASTA files for Chai-1
+    unique_fasta_dir = write_unique_fastas(top_m,
+                                           os.path.join(args.output, 'unique_designs'))
+
+    # Phase 3: Chai-1 prediction
+    results = run_chai1_batch(top_m, unique_fasta_dir,
                               os.path.join(args.output, 'chai1_preds'),
                               cfg, args)
+
+    # Phase 4: Final ranking
     results.sort(key=lambda r: r['combined'], reverse=True)
     top_k = results[:args.top_k]
 
@@ -224,6 +236,8 @@ def main():
         print(f'  {i+1}. {r["design_name"]:30s} '
               f'pLDDT={r["plddt"]:.3f}  pTM={r["ptm"]:.3f}  iPTM={r["iptm"]:.3f}  '
               f'combined={r["combined"]:.3f}')
+        if r.get('orig_name'):
+            print(f'       (source: {r["orig_name"]})')
 
     write_final_results(top_k, args.output)
     print('\nDone.')
