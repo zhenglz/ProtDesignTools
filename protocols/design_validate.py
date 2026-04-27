@@ -180,18 +180,28 @@ def main():
     cfg = load_config(args.config)
     os.makedirs(args.output, exist_ok=True)
 
-    # Phase 1: RFDiffusion3 backbone generation (N rounds)
-    round_dirs = []
+    # Phase 1: RFDiffusion3 backbone generation (N rounds, parallel)
+    processes = []
     for r in range(1, args.num_rounds + 1):
         rfd3_out = os.path.join(args.output, f'rfd3_round_{r}')
-        print(f'\n[Phase 1] RFDiffusion3 round {r}/{args.num_rounds} '
+        print(f'[Phase 1] Submitting RFDiffusion3 round {r}/{args.num_rounds} '
               f'({args.num_designs} designs)')
         cmd = build_rfd3_cmd(args, rfd3_out, args.config)
-        try:
-            sp.run(cmd, check=True)
+        proc = sp.Popen(cmd, stdout=sp.PIPE, stderr=sp.PIPE, universal_newlines=True)
+        processes.append((r, rfd3_out, proc))
+
+    print(f'\n  Submitted {len(processes)} round(s) — waiting for all to complete...\n')
+    round_dirs = []
+    for r, rfd3_out, proc in processes:
+        stdout, stderr = proc.communicate()
+        if proc.returncode == 0:
             round_dirs.append(rfd3_out)
-        except sp.CalledProcessError:
-            print(f'  WARNING: round {r} failed, continuing with remaining rounds')
+            print(f'  Round {r} completed successfully.')
+        else:
+            print(f'  WARNING: round {r} failed (return code {proc.returncode})')
+            if stderr:
+                for line in stderr.strip().splitlines()[-3:]:
+                    print(f'    {line}')
 
     if not round_dirs:
         print('ERROR: all RFD3 rounds failed.')

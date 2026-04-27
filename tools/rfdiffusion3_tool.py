@@ -512,7 +512,6 @@ def prepare_json(pdb_file, output_dir, design_regions=None, contig_str=None,
             "contig": contig_str or "",
             "length": length,
             "select_fixed_atoms": fixed_atoms_dict,
-            "_chain_meta": chain_meta,
             "is_non_loopy": True,
             "dialect": 2,
         }
@@ -521,6 +520,13 @@ def prepare_json(pdb_file, output_dir, design_regions=None, contig_str=None,
     json_path = os.path.join(output_dir, "rf3.json")
     with open(json_path, 'w') as f:
         json.dump(json_data, f, indent=2)
+
+    # Write chain metadata to a separate file so it does not interfere
+    # with RFDiffusion3's pydantic model validation (extra fields not allowed).
+    meta_path = os.path.join(output_dir, "rf3_chain_meta.json")
+    with open(meta_path, 'w') as f:
+        json.dump(chain_meta, f, indent=2)
+
     return json_path
 
 
@@ -817,15 +823,12 @@ def process_outputs(task_dir, output_dir):
             chains = cif_sequence(cif_path)
 
             # If output is single-chain but the design is multi-chain,
-            # use chain_meta from rf3.json to split into proper chains
-            rf3_path = os.path.join(task_dir, "rf3.json")
-            if chains and len(chains) == 1 and os.path.exists(rf3_path):
+            # use chain_meta from the separate metadata file to split
+            meta_path = os.path.join(task_dir, "rf3_chain_meta.json")
+            if chains and len(chains) == 1 and os.path.exists(meta_path):
                 try:
-                    with open(rf3_path) as f:
-                        rf3_data = json.load(f)
-                    # rf3.json has one top-level key (job_key)
-                    job_data = next(iter(rf3_data.values()))
-                    chain_meta = job_data.get("_chain_meta", [])
+                    with open(meta_path) as f:
+                        chain_meta = json.load(f)
                     if chain_meta:
                         output_seq = chains[0][2]  # full single-chain sequence
                         split_chains = split_sequence_by_meta(output_seq, chain_meta)
