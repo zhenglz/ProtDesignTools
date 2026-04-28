@@ -784,7 +784,9 @@ def rebuild_multichain_pdb(cif_path, input_pdb_path, chain_meta, out_pdb_path):
 
     Returns True on success, False on failure.
     """
-    if not os.path.exists(cif_path) or not os.path.exists(input_pdb_path):
+    if input_pdb_path is None or not os.path.exists(input_pdb_path):
+        return False
+    if not os.path.exists(cif_path):
         return False
 
     try:
