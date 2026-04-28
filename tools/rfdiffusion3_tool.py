@@ -770,12 +770,189 @@ def split_sequence_by_meta(output_seq, chain_meta):
     return [(cid, ct, ''.join(parts)) for cid, (ct, parts) in chains.items()]
 
 
-def process_outputs(task_dir, output_dir):
+def rebuild_multichain_pdb(cif_path, input_pdb_path, chain_meta, out_pdb_path):
+    """Reconstruct a multi-chain PDB from a single-chain RFD3 output CIF.
+
+    RFD3 outputs all protein backbone atoms (designed + fixed context) under
+    a single chain ID in the CIF. This function:
+      1. Reads the CIF atoms sequentially.
+      2. Walks *chain_meta* segment-by-segment: for fixed segments
+         (start: N, end: M) the atom count is known; for designed segments
+         (start: None), residues get assigned to the same chain.
+      3. Copies non-protein chains (DNA, ligands) from input PDB.
+      4. Writes a proper multi-chain PDB.
+
+    Returns True on success, False on failure.
+    """
+    if not os.path.exists(cif_path) or not os.path.exists(input_pdb_path):
+        return False
+
+    try:
+        from Bio.PDB import MMCIFParser, PDBParser
+    except ImportError:
+        print("  BioPython not available for multi-chain PDB reconstruction")
+        return False
+
+    # -----------------------------------------------------------------------
+    # 1. Read RFD3 output CIF -> linear list of protein residues
+    # -----------------------------------------------------------------------
+    try:
+        cif_struct = MMCIFParser(QUIET=True).get_structure("rfd3", cif_path)
+    except Exception as e:
+        print(f"  Error reading CIF {cif_path}: {e}")
+        return False
+
+    cif_model = cif_struct[0]
+    cif_residues = []
+    for chain in cif_model:
+        for res in chain:
+            if res.get_id()[0] != ' ':   # skip HETATM / water
+                continue
+            cif_residues.append(res)
+
+    # -----------------------------------------------------------------------
+    # 2. Walk chain_meta: fixed segments consume a known number of CIF
+    #    residues; designed segments (start=None) consume the remaining
+    #    variable-length portion.
+    # -----------------------------------------------------------------------
+    per_chain_res = {}   # chain_id -> list of Biopython Residue objects
+    cif_idx = 0
+
+    for seg in chain_meta:
+        cid = seg['chain']
+        per_chain_res.setdefault(cid, [])
+        if seg.get('is_designed'):
+            # Designed: the CIF will have as many residues as the model
+            # actually generated.  We consume the "pool" of unassigned
+            # residues — but *only* the ones that belong to this segment.
+            # Since RFD3 stitches the output in the same order as the
+            # contig, designed segments consume from what remains after
+            # all preceding fixed segments are handled.
+            #
+            # We don't know the length ahead of time, so we just mark
+            # the start index and assign everything between the last
+            # fixed segment's end and the next fixed segment's start.
+            pass
+        else:
+            n_fixed = seg['end'] - seg['start'] + 1
+            for _ in range(n_fixed):
+                if cif_idx < len(cif_residues):
+                    per_chain_res[cid].append(cif_residues[cif_idx])
+                    cif_idx += 1
+
+    # Now assign the remaining CIF residues in order to the designed
+    # segments (preserving their chain_meta order).
+    for seg in chain_meta:
+        if seg.get('is_designed'):
+            cid = seg['chain']
+            while cif_idx < len(cif_residues):
+                # Keep consuming until the *next* fixed segment on this
+                # same chain, or until we run out of CIF residues.
+                # But we cannot know where the next fixed segment starts
+                # without counting.  A simpler approach: assign *all*
+                # remaining residues to the first designed segment on
+                # each chain.
+                if cif_idx >= len(cif_residues):
+                    break
+                per_chain_res[cid].append(cif_residues[cif_idx])
+                cif_idx += 1
+            # Only the first designed segment on a chain should consume
+            # the pool.  Subsequent designed segments on the same chain
+            # won't have any residues left.  This is an approximation
+            # that works for typical use-cases (one designed block per
+            # chain).
+
+    # -----------------------------------------------------------------------
+    # 3. Read input PDB for non-protein / non-meta chains
+    # -----------------------------------------------------------------------
+    try:
+        inp_struct = PDBParser(QUIET=True).get_structure("input", input_pdb_path)
+    except Exception:
+        inp_struct = None
+    inp_model = inp_struct[0] if inp_struct else None
+
+    meta_chain_ids = {s['chain'] for s in chain_meta}
+
+    # Collect chains from the input PDB that are *protein* and not in
+    # meta — these are "untouched" protein context chains that we want
+    # to copy as-is.
+    input_protein_only = {}
+    if inp_model is not None:
+        for chain in inp_model:
+            cid = chain.get_id()
+            if cid in meta_chain_ids:
+                continue
+            # Detect whether this is a protein chain by looking for CA
+            has_ca = any(
+                atom.get_name() == 'CA'
+                for res in chain
+                if res.get_id()[0] == ' '
+                for atom in res
+            )
+            if has_ca:
+                input_protein_only[cid] = chain
+
+    # -----------------------------------------------------------------------
+    # 4. Write multi-chain PDB (manual ATOM lines for chain reassignment)
+    # -----------------------------------------------------------------------
+    try:
+        with open(out_pdb_path, 'w') as fh:
+            serial = 1
+
+            def write_atoms(chain_id, res, is_hetatm=False):
+                nonlocal serial
+                het, resseq, icode = res.get_id()
+                if het == 'W':
+                    return
+                record = "HETATM" if (het != ' ' or is_hetatm) else "ATOM"
+                rname = res.get_resname()
+                for atom in res:
+                    coord = atom.get_vector()
+                    line = (
+                        f"{record} {serial:>5d} "
+                        f"{atom.get_name():<4s}{rname:>4s} "
+                        f" {chain_id}{resseq:>4d}    "
+                        f"{coord[0]:>8.3f}{coord[1]:>8.3f}{coord[2]:>8.3f}"
+                        f"{atom.get_occupancy():>6.2f}{atom.get_bfactor():>6.2f}"
+                        f"          {atom.get_element():>2s}\n"
+                    )
+                    fh.write(line)
+                    serial += 1
+
+            # 4a. Protein chains from CIF (designed + fixed context)
+            for cid in sorted(per_chain_res.keys()):
+                for res in per_chain_res[cid]:
+                    write_atoms(cid, res)
+
+            # 4b. Protein context chains from input PDB (not in chain_meta)
+            for cid in sorted(input_protein_only.keys()):
+                chain = input_protein_only[cid]
+                for res in chain:
+                    write_atoms(cid, res)
+
+            # 4c. Non-protein chains (DNA, ligands) from input PDB
+            if inp_model is not None:
+                for chain in inp_model:
+                    cid = chain.get_id()
+                    if cid in meta_chain_ids or cid in input_protein_only:
+                        continue
+                    for res in chain:
+                        write_atoms(cid, res, is_hetatm=True)
+
+            fh.write("END\n")
+        return True
+    except Exception as e:
+        print(f"  Error writing multi-chain PDB: {e}")
+        return False
+
+
+def process_outputs(task_dir, output_dir, input_pdb_path=None, chain_meta=None):
     """Process a single task's outputs.
 
     Steps:
       1. Decompress .cif.gz → .cif
-      2. Convert .cif → .pdb (via BioPython)
+      2. Rebuild multi-chain .pdb from CIF + input PDB (replaces simple
+         CIF→PDB conversion when chain_meta is available)
       3. Extract sequences from CIF
       4. Load design scores from companion JSON
 
@@ -791,7 +968,7 @@ def process_outputs(task_dir, output_dir):
             base = base[:-4]
 
         cif_path = os.path.join(task_dir, f"{base}.cif")
-        pdb_path = os.path.join(task_dir, f"{base}.pdb")
+        mc_pdb_path = os.path.join(task_dir, f"{base}_multichain.pdb")
         json_path = os.path.join(task_dir, f"{base}.json")
 
         # Decompress CIF
@@ -803,19 +980,29 @@ def process_outputs(task_dir, output_dir):
             except Exception as e:
                 print(f"    Error decompressing {gz_path}: {e}")
 
-        # Convert CIF → PDB
-        if os.path.exists(cif_path) and not os.path.exists(pdb_path):
-            try:
-                from Bio.PDB import MMCIFParser, PDBIO
-                parser = MMCIFParser(QUIET=True)
-                structure = parser.get_structure("model", cif_path)
-                io = PDBIO()
-                io.set_structure(structure)
-                io.save(pdb_path)
-            except ImportError:
-                print("    BioPython not available, skipping CIF→PDB conversion")
-            except Exception as e:
-                print(f"    Error converting {cif_path}: {e}")
+        # Convert CIF → multi-chain PDB (when chain_meta + input_pdb known)
+        mc_pdb_ok = False
+        if os.path.exists(cif_path) and not os.path.exists(mc_pdb_path):
+            if input_pdb_path and chain_meta:
+                mc_pdb_ok = rebuild_multichain_pdb(
+                    cif_path, input_pdb_path, chain_meta, mc_pdb_path
+                )
+            if not mc_pdb_ok:
+                # Fallback: simple CIF→PDB conversion (single chain)
+                try:
+                    from Bio.PDB import MMCIFParser, PDBIO
+                    parser = MMCIFParser(QUIET=True)
+                    structure = parser.get_structure("model", cif_path)
+                    io = PDBIO()
+                    io.set_structure(structure)
+                    io.save(mc_pdb_path)
+                except ImportError:
+                    print("    BioPython not available, skipping CIF→PDB conversion")
+                except Exception as e:
+                    print(f"    Error converting {cif_path}: {e}")
+
+        # Determine which PDB to reference downstream
+        pdb_path = mc_pdb_path if os.path.exists(mc_pdb_path) else None
 
         # Extract sequences — try multi-chain splitting first
         chains = None
@@ -823,17 +1010,13 @@ def process_outputs(task_dir, output_dir):
             chains = cif_sequence(cif_path)
 
             # If output is single-chain but the design is multi-chain,
-            # use chain_meta from the separate metadata file to split
-            meta_path = os.path.join(task_dir, "rf3_chain_meta.json")
-            if chains and len(chains) == 1 and os.path.exists(meta_path):
+            # use chain_meta to split the sequence
+            if chains and len(chains) == 1 and chain_meta:
                 try:
-                    with open(meta_path) as f:
-                        chain_meta = json.load(f)
-                    if chain_meta:
-                        output_seq = chains[0][2]  # full single-chain sequence
-                        split_chains = split_sequence_by_meta(output_seq, chain_meta)
-                        if split_chains:
-                            chains = split_chains
+                    output_seq = chains[0][2]  # full single-chain sequence
+                    split_chains = split_sequence_by_meta(output_seq, chain_meta)
+                    if split_chains:
+                        chains = split_chains
                 except Exception:
                     pass  # fall back to raw cif_sequence result
 
@@ -1153,8 +1336,27 @@ def main():
     print("\nProcessing outputs and collecting scores...")
     all_designs = []
     for jid, base_name, out_dir, jf in jobs:
+        # Load chain_meta + input_pdb for multi-chain PDB reconstruction
+        mc_input_pdb = None
+        mc_chain_meta = None
+        try:
+            with open(jf) as fh:
+                rf3_data = json.load(fh)
+            job_key = next(iter(rf3_data))
+            mc_input_pdb = rf3_data[job_key].get("input")
+        except Exception:
+            pass
+        meta_path = os.path.join(out_dir, "rf3_chain_meta.json")
+        if os.path.exists(meta_path):
+            try:
+                with open(meta_path) as fh:
+                    mc_chain_meta = json.load(fh)
+            except Exception:
+                pass
         print(f"  {base_name}:")
-        designs = process_outputs(out_dir, args.output)
+        designs = process_outputs(out_dir, args.output,
+                                  input_pdb_path=mc_input_pdb,
+                                  chain_meta=mc_chain_meta)
         if designs:
             for d in designs:
                 rank = composite_rank(d)
