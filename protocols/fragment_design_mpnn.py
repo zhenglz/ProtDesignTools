@@ -173,9 +173,27 @@ def run_chai1_batch(designs, fasta_dir, chai1_out, cfg, args):
     chai1_run = os.path.join(cfg['chai1']['chai1_dir'], 'run.sh')
     slurm_submit = cfg['slurm']['submit_script']
 
-    print(f'[Phase 2] Chai-1: {len(designs)} jobs')
-    jobs = {}
+    # Separate submit vs skip
+    to_submit = []
+    skipped = []
     for d in designs:
+        tag = d.get('_tag', d['design_name'])
+        out_dir = os.path.join(chai1_out, tag)
+        all_five = all(
+            os.path.exists(os.path.join(out_dir, f'pred.model_idx_{m}.cif'))
+            for m in range(5)
+        )
+        if args.skip_existing and all_five:
+            skipped.append(d)
+        else:
+            to_submit.append(d)
+
+    if skipped:
+        print(f'  Skipping {len(skipped)} design(s) with existing Chai-1 results')
+
+    print(f'[Phase 2] Chai-1: {len(to_submit)} new + {len(skipped)} existing')
+    jobs = {}
+    for d in to_submit:
         tag = d.get('_tag', d['design_name'])
         fasta = d.get('_unique_fasta', os.path.join(fasta_dir, f'{tag}.fasta'))
         if not os.path.exists(fasta):
@@ -245,6 +263,8 @@ def parse_args():
     p.add_argument('--max-jobs', type=int, default=4)
     p.add_argument('--local', action='store_true')
     p.add_argument('--config', help='Path to config JSON')
+    p.add_argument('--skip-existing', action='store_true',
+                   help='Skip phases where output files already exist')
     return p.parse_args()
 
 
@@ -259,27 +279,38 @@ def main():
     regions = parse_design_regions(args.design_regions)
 
     # Phase 1: RFDiffusion3 backbone generation (N rounds, parallel)
-    processes = []
+    round_dirs = []
+    rfd3_needed = []
     for r in range(1, args.num_rounds + 1):
         rfd3_out = os.path.join(args.output, f'rfd3_round_{r}')
-        print(f'[Phase 1] Submitting RFDiffusion3 round {r}/{args.num_rounds} '
-              f'({args.num_designs} designs)')
-        cmd = build_rfd3_cmd(args, rfd3_out, args.config)
-        proc = sp.Popen(cmd, stdout=sp.PIPE, stderr=sp.PIPE, universal_newlines=True)
-        processes.append((r, rfd3_out, proc))
-
-    print(f'\n  Submitted {len(processes)} round(s) — waiting for all to complete...\n')
-    round_dirs = []
-    for r, rfd3_out, proc in processes:
-        stdout, stderr = proc.communicate()
-        if proc.returncode == 0:
+        scores_csv = os.path.join(rfd3_out, 'rfd3_scores.csv')
+        if args.skip_existing and os.path.exists(scores_csv):
+            print(f'[Phase 1] Skipping round {r}/{args.num_rounds} — already completed')
             round_dirs.append(rfd3_out)
-            print(f'  Round {r} completed successfully.')
         else:
-            print(f'  WARNING: round {r} failed (return code {proc.returncode})')
-            if stderr:
-                for line in stderr.strip().splitlines()[-3:]:
-                    print(f'    {line}')
+            rfd3_needed.append((r, rfd3_out))
+
+    if rfd3_needed:
+        processes = []
+        for r, rfd3_out in rfd3_needed:
+            print(f'[Phase 1] Submitting RFDiffusion3 round {r}/{args.num_rounds} '
+                  f'({args.num_designs} designs)')
+            cmd = build_rfd3_cmd(args, rfd3_out, args.config)
+            proc = sp.Popen(cmd, stdout=sp.PIPE, stderr=sp.PIPE, universal_newlines=True)
+            processes.append((r, rfd3_out, proc))
+
+        print(f'\n  Submitted {len(processes)} round(s) — waiting for all to complete...\n')
+        for r, rfd3_out, proc in processes:
+            stdout, stderr = proc.communicate()
+            if proc.returncode == 0:
+                if rfd3_out not in round_dirs:
+                    round_dirs.append(rfd3_out)
+                print(f'  Round {r} completed successfully.')
+            else:
+                print(f'  WARNING: round {r} failed (return code {proc.returncode})')
+                if stderr:
+                    for line in stderr.strip().splitlines()[-3:]:
+                        print(f'    {line}')
 
     if not round_dirs:
         print('ERROR: all RFD3 rounds failed.'); sys.exit(1)
@@ -344,6 +375,39 @@ def main():
             pos_str = random_positions(regions, args.mpnn_k)
             if not pos_str:
                 continue
+            design_dir = os.path.join(mpnn_out, f"{name}_iter{iteration:02d}")
+
+            # Skip if MPNN iteration output already exists
+            mpnn_done = os.path.exists(os.path.join(design_dir, 'parsed_output.csv'))
+            if args.skip_existing and mpnn_done:
+                df = parse_design_output(design_dir, wt_seq)
+                if df is not None and len(df) >= 2:
+                    designs_df = df[df['name'] != 'wild_type'].sort_values('score')
+                    if len(designs_df) > 0:
+                        best = designs_df.iloc[0]
+                        design_seq = best['sequence']
+                        mutations = find_mutations(wt_seq, design_seq)
+                        esmif_results = esmif_score(pdb_file, mutations, esmif_python, esmif_script, esmif_work)
+                        esmif_total = sum(s for _, s in esmif_results if not (s != s))
+                        n_scored = sum(1 for _, s in esmif_results if not (s != s))
+                        all_designs.append({
+                            'chai1_design': name,
+                            'iteration': iteration,
+                            'positions': pos_str,
+                            'n_mutations': len(mutations),
+                            'n_scored': n_scored,
+                            'mpnn_score': best['score'],
+                            'esmif_total': esmif_total,
+                            'esmif_mean': esmif_total / n_scored if n_scored else float('nan'),
+                            'sequence': design_seq,
+                            'mutations': ','.join(mutations),
+                            'plddt': cr['plddt'],
+                            'iptm': cr['iptm'],
+                        })
+                        print(f'    iter {iteration:02d}: SKIP (existing), positions={pos_str}, '
+                              f'mutations={len(mutations)}, esmif_total={esmif_total:.3f}')
+                        continue
+
             design_dir = os.path.join(mpnn_out, f"{name}_iter{iteration:02d}")
             os.makedirs(design_dir, exist_ok=True)
 

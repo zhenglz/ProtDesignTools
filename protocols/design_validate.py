@@ -58,6 +58,8 @@ def parse_args():
     p.add_argument('--local', action='store_true',
                    help='Run locally instead of SLURM')
     p.add_argument('--config', help='Path to config JSON')
+    p.add_argument('--skip-existing', action='store_true',
+                   help='Skip phases where output files already exist')
     return p.parse_args()
 
 
@@ -94,37 +96,56 @@ def run_chai1_batch(designs, fasta_dir, chai1_out, cfg, args):
         fasta_dir: directory containing per-design FASTA files
         chai1_out: output directory for Chai-1 predictions
         cfg: config dict
-        args: CLI args (for slurm_partition, ncpus, local)
+        args: CLI args (for slurm_partition, ncpus, local, skip_existing)
     """
     os.makedirs(chai1_out, exist_ok=True)
     chai1_run = os.path.join(cfg['chai1']['chai1_dir'], 'run.sh')
     slurm_submit = cfg['slurm']['submit_script']
 
-    print(f'[Phase 3] Submitting Chai-1 jobs for {len(designs)} designs...')
-
-    # Submit all jobs
-    jobs = {}  # job_id -> (tag, out_dir)
+    # Separate into submit-vs-skip
+    to_submit = []
+    skipped = []
     for d in designs:
         tag = d.get('_tag', d['design_name'])
-        fasta = d.get('_unique_fasta', os.path.join(fasta_dir, f'{tag}.fasta'))
-        if not os.path.exists(fasta):
-            print(f'  SKIP {tag}: no FASTA found')
-            continue
         out_dir = os.path.join(chai1_out, tag)
-        jid = submit_chai1_slurm(
-            fasta, out_dir,
-            slurm_partition=args.slurm_partition, ncpus=args.ncpus,
-            chai1_run=chai1_run, slurm_submit=slurm_submit,
+        # Check all 5 model outputs exist
+        all_five = all(
+            os.path.exists(os.path.join(out_dir, f'pred.model_idx_{m}.cif'))
+            for m in range(5)
         )
-        if jid:
-            jobs[jid] = (tag, out_dir)
-            print(f'  {tag}: submitted (job {jid})')
+        if args.skip_existing and all_five:
+            skipped.append((tag, out_dir, d))
+        else:
+            to_submit.append(d)
 
-    if not jobs:
-        print('No jobs submitted.')
+    if skipped:
+        print(f'  Skipping {len(skipped)} design(s) with existing results')
+
+    # Submit jobs
+    jobs = {}  # job_id -> (tag, out_dir)
+    if to_submit:
+        print(f'[{time.strftime("%H:%M:%S")}] Submitting {len(to_submit)} Chai-1 job(s)...')
+        for d in to_submit:
+            tag = d.get('_tag', d['design_name'])
+            fasta = d.get('_unique_fasta', os.path.join(fasta_dir, f'{tag}.fasta'))
+            if not os.path.exists(fasta):
+                print(f'  SKIP {tag}: no FASTA found')
+                continue
+            out_dir = os.path.join(chai1_out, tag)
+            jid = submit_chai1_slurm(
+                fasta, out_dir,
+                slurm_partition=args.slurm_partition, ncpus=args.ncpus,
+                chai1_run=chai1_run, slurm_submit=slurm_submit,
+            )
+            if jid:
+                jobs[jid] = (tag, out_dir)
+                print(f'  {tag}: submitted (job {jid})')
+
+    if not jobs and not skipped:
+        print('No jobs submitted and no existing results.')
         return []
 
-    # Wait for all jobs
+    # Wait for jobs that were submitted
     total = len(jobs)
     while jobs:
         done = []
@@ -181,27 +202,38 @@ def main():
     os.makedirs(args.output, exist_ok=True)
 
     # Phase 1: RFDiffusion3 backbone generation (N rounds, parallel)
-    processes = []
+    round_dirs = []
+    rfd3_needed = []
     for r in range(1, args.num_rounds + 1):
         rfd3_out = os.path.join(args.output, f'rfd3_round_{r}')
-        print(f'[Phase 1] Submitting RFDiffusion3 round {r}/{args.num_rounds} '
-              f'({args.num_designs} designs)')
-        cmd = build_rfd3_cmd(args, rfd3_out, args.config)
-        proc = sp.Popen(cmd, stdout=sp.PIPE, stderr=sp.PIPE, universal_newlines=True)
-        processes.append((r, rfd3_out, proc))
-
-    print(f'\n  Submitted {len(processes)} round(s) — waiting for all to complete...\n')
-    round_dirs = []
-    for r, rfd3_out, proc in processes:
-        stdout, stderr = proc.communicate()
-        if proc.returncode == 0:
+        scores_csv = os.path.join(rfd3_out, 'rfd3_scores.csv')
+        if args.skip_existing and os.path.exists(scores_csv):
+            print(f'[Phase 1] Skipping round {r}/{args.num_rounds} — already completed')
             round_dirs.append(rfd3_out)
-            print(f'  Round {r} completed successfully.')
         else:
-            print(f'  WARNING: round {r} failed (return code {proc.returncode})')
-            if stderr:
-                for line in stderr.strip().splitlines()[-3:]:
-                    print(f'    {line}')
+            rfd3_needed.append((r, rfd3_out))
+
+    if rfd3_needed:
+        processes = []
+        for r, rfd3_out in rfd3_needed:
+            print(f'[Phase 1] Submitting RFDiffusion3 round {r}/{args.num_rounds} '
+                  f'({args.num_designs} designs)')
+            cmd = build_rfd3_cmd(args, rfd3_out, args.config)
+            proc = sp.Popen(cmd, stdout=sp.PIPE, stderr=sp.PIPE, universal_newlines=True)
+            processes.append((r, rfd3_out, proc))
+
+        print(f'\n  Submitted {len(processes)} round(s) — waiting for all to complete...\n')
+        for r, rfd3_out, proc in processes:
+            stdout, stderr = proc.communicate()
+            if proc.returncode == 0:
+                if rfd3_out not in round_dirs:
+                    round_dirs.append(rfd3_out)
+                print(f'  Round {r} completed successfully.')
+            else:
+                print(f'  WARNING: round {r} failed (return code {proc.returncode})')
+                if stderr:
+                    for line in stderr.strip().splitlines()[-3:]:
+                        print(f'    {line}')
 
     if not round_dirs:
         print('ERROR: all RFD3 rounds failed.')
