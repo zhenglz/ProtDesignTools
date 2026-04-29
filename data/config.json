@@ -26,5 +26,8 @@
     "jackhmmer_n_iterations": 3,
     "jackhmmer_incE": 0.001,
     "default_db": "/data_test/share/pub_datas/af3/uniref90_2022_05.fa"
+  },
+  "goap": {
+    "goap_bin": "/data_test/home/lzzheng/bin/Fast_GOAP"
   }
 }
