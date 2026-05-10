@@ -204,7 +204,7 @@ def parse_design_regions(spec):
         return None
     regions = []
     pattern = re.compile(r'^([A-Za-z])(\d+)-(\d+):(\d+)-(\d+)$')
-    for part in spec.split(';'):
+    for part in spec.replace(',', ';').split(';'):
         part = part.strip()
         m = pattern.match(part)
         if not m:
@@ -239,43 +239,53 @@ def build_contig(regions, pdb_file=None):
     chain_ranges = get_pdb_chain_ranges(pdb_file) if pdb_file else {}
     designed_chains = set(by_chain.keys())
 
+    # Determine chain order: PDB file order, then any designed chains not in PDB
+    if chain_ranges:
+        chain_order = list(chain_ranges.keys())
+        for c in designed_chains:
+            if c not in chain_order:
+                chain_order.append(c)
+    else:
+        chain_order = list(designed_chains)
+
     parts = []
-    for chain, rlist in by_chain.items():
-        cr = chain_ranges.get(chain)
-        chain_start = cr[0] if cr else 1
-        chain_end = cr[1] if cr else (guess_chain_length(pdb_file, chain) if pdb_file else 999)
+    for chain in chain_order:
+        if chain in by_chain:
+            # Designed chain — emit context and design segments
+            rlist = by_chain[chain]
+            cr = chain_ranges.get(chain)
+            chain_start = cr[0] if cr else 1
+            chain_end = cr[1] if cr else (guess_chain_length(pdb_file, chain) if pdb_file else 999)
 
-        prev_end = chain_start - 1  # last residue *kept* before a design region
+            prev_end = chain_start - 1  # last residue *kept* before a design region
 
-        for r in rlist:
-            s, e = r['start'], r['end']
+            for r in rlist:
+                s, e = r['start'], r['end']
 
-            if s == 0:
-                # N-terminal addition: design then the whole chain
-                parts.append(f"/{r['len_min']}-{r['len_max']}")
-                parts.append(f"{chain}{chain_start}-{chain_end}")
-                prev_end = chain_end
-            else:
-                # Context before (if there is a gap since prev_end)
-                if s > prev_end + 1:
-                    parts.append(f"{chain}{prev_end + 1}-{s - 1}")
-                # Design segment replacing s..e
-                parts.append(f"/{r['len_min']}-{r['len_max']}")
-                prev_end = e
+                if s == 0:
+                    # N-terminal addition: design then the whole chain
+                    parts.append(f"/{r['len_min']}-{r['len_max']}")
+                    parts.append(f"{chain}{chain_start}-{chain_end}")
+                    prev_end = chain_end
+                else:
+                    # Context before (if there is a gap since prev_end)
+                    if s > prev_end + 1:
+                        # Context + design merged (same chain)
+                        parts.append(f"{chain}{prev_end + 1}-{s - 1}/{r['len_min']}-{r['len_max']}")
+                    else:
+                        # No gap — include replaced range so chain is explicit
+                        parts.append(f"{chain}{s}-{e}/{r['len_min']}-{r['len_max']}")
+                    prev_end = e
 
-        # Trailing context after last region on this chain
-        if prev_end < chain_end:
-            parts.append(f"{chain}{prev_end + 1}-{chain_end}")
+            # Trailing context after last region on this chain
+            if prev_end < chain_end:
+                parts.append(f"{chain}{prev_end + 1}-{chain_end}")
+        else:
+            # Non-designed chain — fully fixed context
+            start, end = chain_ranges[chain]
+            parts.append(f"{chain}{start}-{end}")
 
-    # Add non-designed chains as fully fixed context
-    for chain_id in sorted(chain_ranges.keys()):
-        if chain_id in designed_chains:
-            continue
-        start, end = chain_ranges[chain_id]
-        parts.append(f"{chain_id}{start}-{end}")
-
-    contig = ",".join(parts).replace(",/", "/")
-    contig = re.sub(r'[A-Za-z]\d+-\d+/(?!\d)', '', contig)
+    contig = ",".join(parts)
     return contig
 
 
@@ -307,59 +317,66 @@ def build_chain_meta(regions, pdb_file=None):
     if pdb_file:
         chain_types = _classify_pdb_chain_types(pdb_file)
 
+    # Determine chain order: PDB file order, then any designed chains not in PDB
+    if chain_ranges:
+        chain_order = list(chain_ranges.keys())
+        for c in designed_chains:
+            if c not in chain_order:
+                chain_order.append(c)
+    else:
+        chain_order = list(designed_chains)
+
     segments = []
-
-    for chain, rlist in by_chain.items():
-        cr = chain_ranges.get(chain)
-        chain_start = cr[0] if cr else 1
-        chain_end = cr[1] if cr else (guess_chain_length(pdb_file, chain) if pdb_file else 999)
+    for chain in chain_order:
         chain_type = chain_types.get(chain, 'protein')
+        if chain in by_chain:
+            # Designed chain — emit context and design segments
+            rlist = by_chain[chain]
+            cr = chain_ranges.get(chain)
+            chain_start = cr[0] if cr else 1
+            chain_end = cr[1] if cr else (guess_chain_length(pdb_file, chain) if pdb_file else 999)
 
-        prev_end = chain_start - 1
+            prev_end = chain_start - 1
 
-        for r in rlist:
-            s, e = r['start'], r['end']
+            for r in rlist:
+                s, e = r['start'], r['end']
 
-            if s == 0:
-                segments.append({
-                    'chain': chain, 'start': None, 'end': None,
-                    'is_designed': True, 'chain_type': chain_type,
-                    'length_range': [r['len_min'], r['len_max']],
-                })
-                segments.append({
-                    'chain': chain, 'start': chain_start, 'end': chain_end,
-                    'is_designed': False, 'chain_type': chain_type,
-                })
-                prev_end = chain_end
-            else:
-                if s > prev_end + 1:
+                if s == 0:
                     segments.append({
-                        'chain': chain, 'start': prev_end + 1, 'end': s - 1,
+                        'chain': chain, 'start': None, 'end': None,
+                        'is_designed': True, 'chain_type': chain_type,
+                        'length_range': [r['len_min'], r['len_max']],
+                    })
+                    segments.append({
+                        'chain': chain, 'start': chain_start, 'end': chain_end,
                         'is_designed': False, 'chain_type': chain_type,
                     })
-                segments.append({
-                    'chain': chain, 'start': None, 'end': None,
-                    'is_designed': True, 'chain_type': chain_type,
-                    'length_range': [r['len_min'], r['len_max']],
-                })
-                prev_end = e
+                    prev_end = chain_end
+                else:
+                    if s > prev_end + 1:
+                        segments.append({
+                            'chain': chain, 'start': prev_end + 1, 'end': s - 1,
+                            'is_designed': False, 'chain_type': chain_type,
+                        })
+                    segments.append({
+                        'chain': chain, 'start': None, 'end': None,
+                        'is_designed': True, 'chain_type': chain_type,
+                        'length_range': [r['len_min'], r['len_max']],
+                    })
+                    prev_end = e
 
-        if prev_end < chain_end:
+            if prev_end < chain_end:
+                segments.append({
+                    'chain': chain, 'start': prev_end + 1, 'end': chain_end,
+                    'is_designed': False, 'chain_type': chain_type,
+                })
+        else:
+            # Non-designed chain — fully fixed context
+            start, end = chain_ranges[chain]
             segments.append({
-                'chain': chain, 'start': prev_end + 1, 'end': chain_end,
+                'chain': chain, 'start': start, 'end': end,
                 'is_designed': False, 'chain_type': chain_type,
             })
-
-    # Non-designed chains: fully fixed
-    for chain_id in sorted(chain_ranges.keys()):
-        if chain_id in designed_chains:
-            continue
-        start, end = chain_ranges[chain_id]
-        chain_type = chain_types.get(chain_id, 'protein')
-        segments.append({
-            'chain': chain_id, 'start': start, 'end': end,
-            'is_designed': False, 'chain_type': chain_type,
-        })
 
     return segments
 
@@ -483,19 +500,31 @@ def prepare_json(pdb_file, output_dir, design_regions=None, contig_str=None,
         # For designed chains: fix context regions with "BKBN" (backbone only)
         # so that sidechains in the designed region can be freely sampled.
         # For non-designed chains (not in design_regions): fix with "ALL".
+        # Group design regions by chain and compute non-overlapping context ranges.
         designed_chains = set(r['chain'] for r in design_regions)
+        regions_by_chain = {}
         for r in design_regions:
-            ch, s, e = r['chain'], r['start'], r['end']
+            regions_by_chain.setdefault(r['chain'], []).append(r)
+        for ch, rlist in regions_by_chain.items():
+            rlist.sort(key=lambda x: x['start'])
             cr = chain_ranges.get(ch)
             chain_start = cr[0] if cr else 1
             chain_end = cr[1] if cr else (guess_chain_length(pdb_file, ch) or 9999)
-            if s > 0:
-                if s > chain_start:
-                    fixed_atoms_dict[f"{ch}{chain_start}-{s - 1}"] = "BKBN"
-                if e < chain_end:
-                    fixed_atoms_dict[f"{ch}{e + 1}-{chain_end}"] = "BKBN"
-            else:
-                fixed_atoms_dict[f"{ch}{chain_start}-{chain_end}"] = "BKBN"
+            prev_end = chain_start - 1
+            for r in rlist:
+                s, e = r['start'], r['end']
+                if s == 0:
+                    # N-terminal addition: entire chain is context after design
+                    if prev_end < chain_end:
+                        fixed_atoms_dict[f"{ch}{chain_start}-{chain_end}"] = "BKBN"
+                    break
+                # Context before this design region (gap from previous)
+                if s > prev_end + 1:
+                    fixed_atoms_dict[f"{ch}{prev_end + 1}-{s - 1}"] = "BKBN"
+                prev_end = e
+            # Trailing context after last region on this chain
+            if prev_end < chain_end:
+                fixed_atoms_dict[f"{ch}{prev_end + 1}-{chain_end}"] = "BKBN"
 
         # Non-designed chains: fix everything with "ALL"
         for chain_id, (cstart, cend) in chain_ranges.items():

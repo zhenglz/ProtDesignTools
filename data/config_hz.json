@@ -11,5 +11,23 @@
   },
   "slurm": {
     "submit_script": "/sugon_store/zhengliangzhen/bin/submit_slurm_gpu.sh"
+  },
+  "esmif": {
+    "python_exe": "/data_test/home/lzzheng/apps/anaconda3/envs/sfct/bin/python",
+    "script_path": "/data_test/home/lzzheng/apps/zMutScan/scripts/esmif_scorer.py"
+  },
+  "alignment": {
+    "tmalign_bin": "/data_test/home/lzzheng/bin/TMalign",
+    "cif2pdb_script": "/data_test/home/lzzheng/bin/cif2pdb.py",
+    "python_exe": "/data_test/home/lzzheng/.conda/envs/sfct/bin/python3.6"
+  },
+  "msa": {
+    "qjackhmmer": "/data_test/home/lzzheng/bin/qjackhmmer",
+    "jackhmmer_n_iterations": 3,
+    "jackhmmer_incE": 0.001,
+    "default_db": "/data_test/share/pub_datas/af3/uniref90_2022_05.fa"
+  },
+  "goap": {
+    "goap_bin": "/data_test/home/lzzheng/bin/Fast_GOAP"
   }
 }
