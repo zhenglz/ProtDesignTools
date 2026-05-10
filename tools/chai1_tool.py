@@ -127,106 +127,32 @@ def run_chai1_local(fasta_path, output_dir, msa_path=None, chai1_run=None):
 def check_job_status(job_id):
     """Check if a SLURM job is still running.
 
+    Uses squeue to check job state. If the job is not found in the
+    queue at all, it is considered completed — no sacct fallback,
+    since sacct frequently returns empty on this system for completed
+    jobs, causing completed jobs to appear stuck forever.
+
     Returns True if job is still running/pending, False if completed/failed.
     """
-    debug = False  # Set to True for debugging
+    if not job_id:
+        return False
 
-    # First, try squeue (most reliable for active/pending jobs)
-    cmd = f"squeue -j {job_id} --format=%T --noheader"
-    result = sp.run(cmd, shell=True, stdout=sp.PIPE, stderr=sp.PIPE)
+    try:
+        result = sp.run(
+            ['squeue', '-j', str(job_id), '--format=%T', '--noheader'],
+            stdout=sp.PIPE, stderr=sp.PIPE, universal_newlines=True,
+        )
+        if result.returncode == 0:
+            state = result.stdout.strip()
+            if state:
+                running = {"R", "RUNNING", "PD", "PENDING", "CF", "CONFIGURING",
+                           "CG", "COMPLETING", "S", "SUSPENDED", "ST", "STOPPED"}
+                state_clean = state.rstrip('+').upper()
+                return state_clean in running
+    except Exception:
+        pass
 
-    if result.returncode == 0:
-        output = result.stdout.decode().strip()
-        if debug:
-            print(f"  DEBUG squeue for {job_id}: '{output}'")
-
-        if output:
-            # squeue returns states - check both full and abbreviated
-            running_states = {"RUNNING", "R", "PENDING", "PD", "CONFIGURING", "CF",
-                             "COMPLETING", "CG", "SUSPENDED", "S", "STOPPED", "ST"}
-            running_states_lower = {s.lower() for s in running_states}
-            all_running_states = running_states.union(running_states_lower)
-
-            # Clean state (remove trailing + etc.)
-            state_clean = output.rstrip('+')
-
-            if debug:
-                print(f"  DEBUG checking state: '{output}', clean: '{state_clean}'")
-
-            if output in all_running_states or state_clean in all_running_states:
-                if debug:
-                    print(f"  DEBUG state in running_states -> returning True")
-                return True
-            else:
-                # squeue returned something but not a running state
-                if debug:
-                    print(f"  DEBUG squeue returned non-running state: '{output}'")
-                # This shouldn't happen for active jobs
-                # Fall through to check sacct
-                pass
-        else:
-            # squeue returned empty - job not in queue
-            if debug:
-                print(f"  DEBUG squeue returned empty")
-            # Fall through to check sacct
-
-    # If squeue doesn't show the job, check sacct (for completed/failed jobs)
-    cmd = f"sacct -j {job_id} --format=State --noheader"
-    result = sp.run(cmd, shell=True, stdout=sp.PIPE, stderr=sp.PIPE)
-
-    if result.returncode == 0:
-        output = result.stdout.decode().strip()
-        if debug:
-            print(f"  DEBUG sacct for {job_id}: '{output}'")
-
-        if output:
-            # Check for running/pending states
-            running_states = {
-                "RUNNING", "R", "PENDING", "PD", "CONFIGURING", "CF",
-                "COMPLETING", "CG", "SUSPENDED", "S", "STOPPED", "ST"
-            }
-            running_states_lower = {s.lower() for s in running_states}
-            all_running_states = running_states.union(running_states_lower)
-
-            # Check each line from sacct
-            for line in output.split('\n'):
-                line = line.strip()
-                if not line:
-                    continue
-
-                # Get first word (state)
-                parts = line.split()
-                state = parts[0] if parts else ""
-
-                # Clean state
-                state_clean = state.rstrip('+')
-
-                if debug:
-                    print(f"  DEBUG checking sacct state: '{state}', clean: '{state_clean}'")
-
-                if state in all_running_states or state_clean in all_running_states:
-                    if debug:
-                        print(f"  DEBUG sacct state in running_states -> returning True")
-                    return True
-
-            # If we get here, sacct didn't show any running states
-            # Job is probably completed/failed
-            if debug:
-                print(f"  DEBUG sacct shows no running states -> returning False")
-            return False
-        else:
-            # sacct returned empty
-            if debug:
-                print(f"  DEBUG sacct returned empty")
-            # Job might be too new or doesn't exist
-            # Be conservative: assume still running
-            return True
-    else:
-        # sacct failed
-        if debug:
-            print(f"  DEBUG sacct failed")
-        # Be conservative: assume still running
-        return True
+    return False
 
 
 def wait_for_jobs(job_ids, poll_interval=30):
