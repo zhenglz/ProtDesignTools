@@ -636,7 +636,7 @@ def run_local(cmd, job_name, log_dir):
 def check_job_status_slurm(job_id):
     """Check SLURM job status via squeue."""
     if not job_id:
-        return "COMPLETED"
+        return None
     try:
         r = sp.run(['squeue', '-j', str(job_id), '-h', '-o', '%T'],
                    stdout=sp.PIPE, stderr=sp.PIPE, universal_newlines=True)
@@ -838,9 +838,11 @@ def rebuild_multichain_pdb(cif_path, input_pdb_path, chain_meta, out_pdb_path):
     RFD3 outputs all protein backbone atoms (designed + fixed context) under
     a single chain ID in the CIF. This function:
       1. Reads the CIF atoms sequentially.
-      2. Walks *chain_meta* segment-by-segment: for fixed segments
-         (start: N, end: M) the atom count is known; for designed segments
-         (start: None), residues get assigned to the same chain.
+      2. Walks *chain_meta* segment-by-segment in a single pass, consuming
+         CIF residues in order. Fixed segment lengths are known; designed
+         segment lengths are calculated proportionally (same logic as
+         split_sequence_by_meta) so segments are assigned correctly even
+         when designed and fixed segments are interleaved on the same chain.
       3. Copies non-protein chains (DNA, ligands) from input PDB.
       4. Writes a proper multi-chain PDB.
 
@@ -875,56 +877,70 @@ def rebuild_multichain_pdb(cif_path, input_pdb_path, chain_meta, out_pdb_path):
             cif_residues.append(res)
 
     # -----------------------------------------------------------------------
-    # 2. Walk chain_meta: fixed segments consume a known number of CIF
-    #    residues; designed segments (start=None) consume the remaining
-    #    variable-length portion.
+    # 2. Walk chain_meta in order, consuming CIF residues segment by
+    #    segment.  Fixed segments have a known length (end-start+1).
+    #    Designed segments get a proportional share of the remaining
+    #    residues after all fixed segments are accounted for.
+    #
+    #    This single-pass approach matches the CIF residue order (which
+    #    follows the contig: A context, B context, designed1, designed2,
+    #    C context) — unlike the old two-pass approach that broke when
+    #    fixed and designed segments were interleaved on the same chain.
     # -----------------------------------------------------------------------
     per_chain_res = {}   # chain_id -> list of Biopython Residue objects
-    cif_idx = 0
 
+    # Count total fixed residues and collect designed segment indices
+    n_fixed = 0
+    designed_indices = []  # indices into chain_meta
+    for i, seg in enumerate(chain_meta):
+        if seg.get('is_designed'):
+            designed_indices.append(i)
+        else:
+            n_fixed += seg['end'] - seg['start'] + 1
+
+    total_designed = len(cif_residues) - n_fixed
+    if total_designed < 0:
+        total_designed = 0
+
+    # Distribute designed residues proportionally (same logic as
+    # split_sequence_by_meta)
+    n_designed = len(designed_indices)
+    designed_lengths = []
+    if n_designed == 1:
+        designed_lengths = [total_designed]
+    elif n_designed > 1:
+        min_lengths = []
+        for idx in designed_indices:
+            lr = chain_meta[idx].get('length_range', [1, 999])
+            min_lengths.append(lr[0])
+        total_min = sum(min_lengths) or 1
+        remaining = total_designed
+        for i in range(n_designed):
+            if i == n_designed - 1:
+                designed_lengths.append(remaining)
+            else:
+                share = max(1, int(total_designed * min_lengths[i] / total_min))
+                share = min(share, remaining - (n_designed - i - 1))
+                designed_lengths.append(share)
+                remaining -= share
+    else:
+        designed_lengths = []
+
+    # Single pass: consume CIF residues in chain_meta order
+    cif_idx = 0
+    d_idx = 0
     for seg in chain_meta:
         cid = seg['chain']
         per_chain_res.setdefault(cid, [])
         if seg.get('is_designed'):
-            # Designed: the CIF will have as many residues as the model
-            # actually generated.  We consume the "pool" of unassigned
-            # residues — but *only* the ones that belong to this segment.
-            # Since RFD3 stitches the output in the same order as the
-            # contig, designed segments consume from what remains after
-            # all preceding fixed segments are handled.
-            #
-            # We don't know the length ahead of time, so we just mark
-            # the start index and assign everything between the last
-            # fixed segment's end and the next fixed segment's start.
-            pass
+            seg_len = designed_lengths[d_idx]
+            d_idx += 1
         else:
-            n_fixed = seg['end'] - seg['start'] + 1
-            for _ in range(n_fixed):
-                if cif_idx < len(cif_residues):
-                    per_chain_res[cid].append(cif_residues[cif_idx])
-                    cif_idx += 1
-
-    # Now assign the remaining CIF residues in order to the designed
-    # segments (preserving their chain_meta order).
-    for seg in chain_meta:
-        if seg.get('is_designed'):
-            cid = seg['chain']
-            while cif_idx < len(cif_residues):
-                # Keep consuming until the *next* fixed segment on this
-                # same chain, or until we run out of CIF residues.
-                # But we cannot know where the next fixed segment starts
-                # without counting.  A simpler approach: assign *all*
-                # remaining residues to the first designed segment on
-                # each chain.
-                if cif_idx >= len(cif_residues):
-                    break
+            seg_len = seg['end'] - seg['start'] + 1
+        for _ in range(seg_len):
+            if cif_idx < len(cif_residues):
                 per_chain_res[cid].append(cif_residues[cif_idx])
                 cif_idx += 1
-            # Only the first designed segment on a chain should consume
-            # the pool.  Subsequent designed segments on the same chain
-            # won't have any residues left.  This is an approximation
-            # that works for typical use-cases (one designed block per
-            # chain).
 
     # -----------------------------------------------------------------------
     # 3. Read input PDB for non-protein / non-meta chains
@@ -1360,7 +1376,10 @@ def main():
             for jid, (name, out_dir, jf) in pending.items():
                 status = check_job_status_local(jid) if args.local else check_job_status_slurm(jid)
                 job_states[jid] = status
-                if status in ("COMPLETED", "CD", "COMPLETING", "CG"):
+                if status is None:
+                    done.append(jid)
+                    print(f"  {name}: NO JOB ID (submission failed)")
+                elif status in ("COMPLETED", "CD", "COMPLETING", "CG"):
                     done.append(jid)
                     completed_names.add(name)
                 elif status in ("FAILED", "F", "CANCELLED", "CA", "TIMEOUT", "TO",

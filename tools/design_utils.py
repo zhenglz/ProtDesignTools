@@ -146,15 +146,13 @@ def collect_designs_from_rounds(round_dirs):
 
         fasta_dir = os.path.join(rdir, 'top_designs_fastas')
 
-        # Load chain_meta from this round's rf3.json (all rounds are the same)
+        # Load chain_meta from the separate metadata file (all rounds share the same)
         if not chain_meta:
-            rf3_path = os.path.join(rdir, 'rf3.json')
-            if os.path.exists(rf3_path):
+            meta_path = os.path.join(rdir, 'rf3_chain_meta.json')
+            if os.path.exists(meta_path):
                 try:
-                    with open(rf3_path) as f:
-                        rf3_data = json.load(f)
-                    job_data = next(iter(rf3_data.values()))
-                    chain_meta = job_data.get('_chain_meta', [])
+                    with open(meta_path) as f:
+                        chain_meta = json.load(f)
                 except Exception:
                     pass
 
