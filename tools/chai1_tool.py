@@ -530,6 +530,8 @@ def main():
                    help="Don't wait for jobs to complete (submit and exit)")
     ap.add_argument("--poll-interval", type=int, default=30,
                    help="Seconds between job status checks (default: 30)")
+    ap.add_argument("--complex", action="store_true",
+                   help="Treat multi-sequence FASTA as a protein complex (single Chai-1 job with all chains together)")
     ap.add_argument("--skip-existing", action="store_true",
                    help="Skip sequences that already have prediction results")
     ap.add_argument("--config", default=None,
@@ -588,54 +590,90 @@ def main():
     fasta_dir = os.path.join(root, "fastas")
     os.makedirs(fasta_dir, exist_ok=True)
 
-    jobs = []
-    existing_results = []  # Track sequences that already have results
+    # ── Complex mode: single job for multi-chain ──────────────────────
+    if args.complex and len(sequences) > 1:
+        print(f"Complex mode: submitting all {len(sequences)} chains as a single Chai-1 job")
+        complex_fasta = os.path.join(fasta_dir, "complex.fasta")
+        with open(complex_fasta, "w") as fh:
+            for header, seq in sequences:
+                fh.write(f">protein|{header.lstrip('>')}\n{seq}\n")
 
-    for header, seq in sequences:
-        seq_name = sanitize_name(header)
+        output_dir = os.path.join(root, "complex")
 
-        # Create FASTA file in fasta directory
-        fasta_path = os.path.join(fasta_dir, f"{seq_name}.fasta")
-
-        # Output directory for Chai-1 (will be created by Chai-1)
-        output_dir = os.path.join(root, seq_name)
-
-        # Check if results already exist
-        has_existing_results = False
+        has_existing = False
         if args.skip_existing:
-            # Check if all 5 models exist
-            all_exist = True
-            for model_idx in range(5):
-                cif_path = os.path.join(output_dir, f"pred.model_idx_{model_idx}.cif")
-                if not os.path.exists(cif_path):
-                    all_exist = False
-                    break
-
+            all_exist = all(
+                os.path.exists(os.path.join(output_dir, f"pred.model_idx_{m}.cif"))
+                for m in range(5)
+            )
             if all_exist:
-                print(f"  {seq_name}: prediction results already exist (will skip submission)")
-                has_existing_results = True
-                existing_results.append(seq_name)
+                print("  Prediction results already exist (will skip submission)")
+                has_existing = True
 
-        # Write FASTA file (always write it, even for existing results)
-        with open(fasta_path, "w") as fh:
-            fh.write(f">protein|{header.lstrip('>')}\n{seq}\n")
-
-        # Find MSA file if provided
         msa_path = None
         if args.msa_dir:
-            # Try different naming patterns
             msa_patterns = [
-                os.path.join(args.msa_dir, f"{seq_name}{args.msa_suffix}"),
-                os.path.join(args.msa_dir, f"{seq_name.replace('_', '')}{args.msa_suffix}"),
-                os.path.join(args.msa_dir, f"{header.lstrip('>').split()[0]}{args.msa_suffix}"),
+                os.path.join(args.msa_dir, f"complex{args.msa_suffix}"),
             ]
             for pattern in msa_patterns:
                 if os.path.exists(pattern):
                     msa_path = pattern
                     break
 
-        # Add to jobs list with a flag indicating if results already exist
-        jobs.append((seq_name, fasta_path, output_dir, msa_path, has_existing_results))
+        # We represent "jobs" as a single entry; score extraction reads
+        # the same output_dir for all sequences.
+        jobs = [("complex", complex_fasta, output_dir, msa_path, has_existing)]
+
+    else:
+        # ── Per-sequence mode (original behavior) ─────────────────────────
+        jobs = []
+        existing_results = []  # Track sequences that already have results
+
+        for header, seq in sequences:
+            seq_name = sanitize_name(header)
+
+            # Create FASTA file in fasta directory
+            fasta_path = os.path.join(fasta_dir, f"{seq_name}.fasta")
+
+            # Output directory for Chai-1 (will be created by Chai-1)
+            output_dir = os.path.join(root, seq_name)
+
+            # Check if results already exist
+            has_existing_results = False
+            if args.skip_existing:
+                # Check if all 5 models exist
+                all_exist = True
+                for model_idx in range(5):
+                    cif_path = os.path.join(output_dir, f"pred.model_idx_{model_idx}.cif")
+                    if not os.path.exists(cif_path):
+                        all_exist = False
+                        break
+
+                if all_exist:
+                    print(f"  {seq_name}: prediction results already exist (will skip submission)")
+                    has_existing_results = True
+                    existing_results.append(seq_name)
+
+            # Write FASTA file (always write it, even for existing results)
+            with open(fasta_path, "w") as fh:
+                fh.write(f">protein|{header.lstrip('>')}\n{seq}\n")
+
+            # Find MSA file if provided
+            msa_path = None
+            if args.msa_dir:
+                # Try different naming patterns
+                msa_patterns = [
+                    os.path.join(args.msa_dir, f"{seq_name}{args.msa_suffix}"),
+                    os.path.join(args.msa_dir, f"{seq_name.replace('_', '')}{args.msa_suffix}"),
+                    os.path.join(args.msa_dir, f"{header.lstrip('>').split()[0]}{args.msa_suffix}"),
+                ]
+                for pattern in msa_patterns:
+                    if os.path.exists(pattern):
+                        msa_path = pattern
+                        break
+
+            # Add to jobs list with a flag indicating if results already exist
+            jobs.append((seq_name, fasta_path, output_dir, msa_path, has_existing_results))
 
     if not jobs:
         print("No jobs to process (all skipped or no sequences)")
@@ -710,41 +748,73 @@ def main():
     all_scores = []
     successful = 0
 
-    for seq_name, _, output_dir, _, _ in jobs:
-        print(f"\nExtracting scores for {seq_name}...")
+    if args.complex and len(sequences) > 1:
+        # Complex mode: one output directory, all sequences share the same score
+        seq_name, _, output_dir, _, _ = jobs[0]
+        print(f"\nExtracting scores for complex ({len(sequences)} chains)...")
 
-        # Check if prediction completed
-        has_models = False
-        for model_idx in range(5):
-            cif_path = os.path.join(output_dir, f"pred.model_idx_{model_idx}.cif")
-            if os.path.exists(cif_path):
-                has_models = True
-                break
+        has_models = any(
+            os.path.exists(os.path.join(output_dir, f"pred.model_idx_{m}.cif"))
+            for m in range(5)
+        )
 
         if not has_models:
-            print(f"  WARNING: No prediction results found for {seq_name}")
-            all_scores.append({})
-            continue
-
-        # Extract scores
-        scores = extract_all_scores(seq_name, output_dir)
-        all_scores.append(scores)
-
-        if scores:
-            successful += 1
-            # Print key scores
-            best_model = scores.get("best_model", "N/A")
-            best_plddt = scores.get("best_plddt", "N/A")
-            best_ptm = scores.get("best_ptm", "N/A")
-
-            if isinstance(best_plddt, float):
-                print(f"  Best model: {best_model}, pLDDT: {best_plddt:.2f}, pTM: {best_ptm:.4f}")
-            else:
-                print(f"  Scores extracted but some values missing")
+            print("  WARNING: No prediction results found for complex")
+            all_scores = [{} for _ in sequences]
         else:
-            print(f"  No scores could be extracted")
+            scores = extract_all_scores(seq_name, output_dir)
+            # Same scores apply to every sequence in the complex
+            all_scores = [scores for _ in sequences]
+            if scores:
+                successful = 1
+                best_model = scores.get("best_model", "N/A")
+                best_plddt = scores.get("best_plddt", "N/A")
+                if isinstance(best_plddt, float):
+                    print(f"  Best model: {best_model}, pLDDT: {best_plddt:.2f}, "
+                          f"pTM: {scores.get('best_ptm', 'N/A'):.4f}")
+            else:
+                print("  No scores could be extracted")
+                all_scores = [{} for _ in sequences]
+    else:
+        # Per-sequence mode (original)
+        for seq_name, _, output_dir, _, _ in jobs:
+            print(f"\nExtracting scores for {seq_name}...")
 
-    print(f"\nSuccessfully extracted scores for {successful}/{len(jobs)} sequence(s)")
+            # Check if prediction completed
+            has_models = False
+            for model_idx in range(5):
+                cif_path = os.path.join(output_dir, f"pred.model_idx_{model_idx}.cif")
+                if os.path.exists(cif_path):
+                    has_models = True
+                    break
+
+            if not has_models:
+                print(f"  WARNING: No prediction results found for {seq_name}")
+                all_scores.append({})
+                continue
+
+            # Extract scores
+            scores = extract_all_scores(seq_name, output_dir)
+            all_scores.append(scores)
+
+            if scores:
+                successful += 1
+                # Print key scores
+                best_model = scores.get("best_model", "N/A")
+                best_plddt = scores.get("best_plddt", "N/A")
+                best_ptm = scores.get("best_ptm", "N/A")
+
+                if isinstance(best_plddt, float):
+                    print(f"  Best model: {best_model}, pLDDT: {best_plddt:.2f}, pTM: {best_ptm:.4f}")
+                else:
+                    print(f"  Scores extracted but some values missing")
+            else:
+                print(f"  No scores could be extracted")
+
+    if args.complex and len(sequences) > 1:
+        print(f"\nSuccessfully extracted scores for complex (1 job/{len(sequences)} chains)")
+    else:
+        print(f"\nSuccessfully extracted scores for {successful}/{len(jobs)} sequence(s)")
 
     # -----------------------------------------------------------------------
     # Generate reports
@@ -770,10 +840,16 @@ def main():
     print(f"  FASTA files:       {fasta_dir}")
     print(f"  Prediction results: {root}/<sequence_name>/")
     print(f"Total sequences:     {len(sequences)}")
-    if args.skip_existing and existing_results:
-        print(f"  - With existing results: {len(existing_results)} (skipped submission)")
-        print(f"  - New predictions needed: {len(jobs) - len(existing_results)}")
-    print(f"Scores extracted:    {successful}/{len(jobs)}")
+    if args.skip_existing:
+        skipped_jobs = [j[0] for j in jobs if j[4]]
+        if skipped_jobs:
+            print(f"  - With existing results: {len(skipped_jobs)} (skipped submission)")
+            if not (args.complex and len(sequences) > 1):
+                print(f"  - New predictions needed: {len(jobs) - len(skipped_jobs)}")
+    if args.complex and len(sequences) > 1:
+        print(f"Scores extracted:    1 job (complex, {len(sequences)} chains)")
+    else:
+        print(f"Scores extracted:    {successful}/{len(jobs)}")
     print(f"Detailed report:     {report_path}")
     print(f"\nTo view top predictions by pLDDT:")
     print(f"  sort -t, -k1,1 -k7,7nr {report_path} | head -20")

@@ -12,6 +12,8 @@ directory for easy inspection.
 Design region syntax:
   <chain><start>-<end>:<design_len_min>-<design_len_max>[;<next_region>...]
 
+  Multiple regions can be separated by ',' or ';'.
+
   Replace existing residues — keep the surrounding context, design a new segment
   of the specified length in place of the original residues.
 
@@ -225,10 +227,16 @@ def parse_design_regions(spec):
 def build_contig(regions, pdb_file=None):
     """Build an RFDiffusion3 contig string from parsed design region specs.
 
-    For each region (start > 0): keep context-before, design /Lmin-Lmax.
-    For N-terminal (start == 0): design /Lmin-Lmax, keep entire chain.
+    RFD3 contig format (dialect=2) uses comma-separated components:
+      - chainX-Y  : keep residues X-Y from input chain (fixed context)
+      - N or N-M  : design N residues (or sample from N-M range)
+      - /0        : chain break (advance output chain letter)
+
+    For each region (start > 0): keep context-before, then design length.
+    For N-terminal (start == 0): design length, then keep entire chain.
     Trailing context added after all regions on each chain.
-    Non-designed chains from the PDB are included as fully fixed context.
+    Non-designed chains are included as fully fixed context.
+    Chain break (/0) inserted between different output chains.
     """
     by_chain = OrderedDict()
     for r in regions:
@@ -249,9 +257,15 @@ def build_contig(regions, pdb_file=None):
         chain_order = list(designed_chains)
 
     parts = []
+    first_chain = True
+
     for chain in chain_order:
+        if not first_chain:
+            parts.append("/0")  # chain break between output chains
+        first_chain = False
+
         if chain in by_chain:
-            # Designed chain — emit context and design segments
+            # Designed chain — interleave context and design lengths
             rlist = by_chain[chain]
             cr = chain_ranges.get(chain)
             chain_start = cr[0] if cr else 1
@@ -263,18 +277,16 @@ def build_contig(regions, pdb_file=None):
                 s, e = r['start'], r['end']
 
                 if s == 0:
-                    # N-terminal addition: design then the whole chain
-                    parts.append(f"/{r['len_min']}-{r['len_max']}")
+                    # N-terminal addition: design length then whole chain context
+                    parts.append(f"{r['len_min']}-{r['len_max']}")
                     parts.append(f"{chain}{chain_start}-{chain_end}")
                     prev_end = chain_end
                 else:
                     # Context before (if there is a gap since prev_end)
                     if s > prev_end + 1:
-                        # Context + design merged (same chain)
-                        parts.append(f"{chain}{prev_end + 1}-{s - 1}/{r['len_min']}-{r['len_max']}")
-                    else:
-                        # No gap — include replaced range so chain is explicit
-                        parts.append(f"{chain}{s}-{e}/{r['len_min']}-{r['len_max']}")
+                        parts.append(f"{chain}{prev_end + 1}-{s - 1}")
+                    # Design length for this region (bare number, no /)
+                    parts.append(f"{r['len_min']}-{r['len_max']}")
                     prev_end = e
 
             # Trailing context after last region on this chain
@@ -468,13 +480,34 @@ def prepare_json(pdb_file, output_dir, design_regions=None, contig_str=None,
             cr = chain_ranges.get(chain)
             chain_start = cr[0] if cr else 1
             chain_end = cr[1] if cr else (guess_chain_length(pdb_file, chain) or 9999)
+
+            # For each designed chain: sum kept context + designed length across all regions
+            kept = 0
+            des_lmin = 0
+            des_lmax = 0
+            prev_end = chain_start - 1
             for r in rlist:
                 s, e = r['start'], r['end']
-                removed = e - s + 1 if s > 0 else 0
-                base_len = (chain_end - chain_start + 1) - removed if s > 0 else (chain_end - chain_start + 1)
-                total_lmin += base_len + r['len_min']
-                total_lmax += base_len + r['len_max']
-                break
+                if s > 0:
+                    # Context before this region (gap from prev_end)
+                    if s > prev_end + 1:
+                        kept += (s - 1) - (prev_end + 1) + 1
+                    # Design replaces s..e
+                    des_lmin += r['len_min']
+                    des_lmax += r['len_max']
+                    prev_end = e
+                else:
+                    # N-terminal: keep whole chain, add design
+                    des_lmin += r['len_min']
+                    des_lmax += r['len_max']
+                    kept += chain_end - chain_start + 1
+                    prev_end = chain_end
+            # Trailing context after last region
+            if prev_end < chain_end:
+                kept += chain_end - prev_end
+
+            total_lmin += kept + des_lmin
+            total_lmax += kept + des_lmax
 
         # Non-designed chains: fixed length
         for chain_id, (cstart, cend) in chain_ranges.items():
