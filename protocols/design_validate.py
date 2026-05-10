@@ -150,11 +150,8 @@ def run_chai1_batch(designs, fasta_dir, chai1_out, cfg, args):
     while jobs:
         done = []
         for jid, (tag, out_dir) in jobs.items():
-            st = check_job_status(jid)
-            if st in ('COMPLETED', 'CD', 'COMPLETING'):
-                done.append(jid)
-            elif st in ('FAILED', 'F', 'CANCELLED', 'CA', 'TIMEOUT', 'TO'):
-                print(f'  {tag}: FAILED ({st})')
+            still_running = check_job_status(jid)  # True=running/pending, False=completed/failed
+            if not still_running:
                 done.append(jid)
         for jid in done:
             del jobs[jid]

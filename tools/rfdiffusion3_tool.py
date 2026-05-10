@@ -1139,9 +1139,12 @@ def write_fasta(designs, output_dir, top_n=0):
     designs is also written at the output root.
 
     Headers use the Chai-1 convention:
-      >protein|design_01_A      for protein chains
-      >DNA|design_01_B          for DNA chains
-      >ligand|design_01_C       for ligand / other chains
+      >protein|design_01_A
+      >DNA|design_01_B
+      >ligand|design_01_C
+
+    Only the entity type and chain identifier are included — no extra metadata
+    that could confuse downstream parsers.
 
     If top_n > 0, only the top N designs (by composite score) are included.
     """
@@ -1162,13 +1165,7 @@ def write_fasta(designs, output_dir, top_n=0):
         fasta_path = os.path.join(fasta_dir, f"{d['design_name']}.fasta")
         with open(fasta_path, 'w') as f:
             for cid, chain_type, seq in d["chains"]:
-                header = (
-                    f">{chain_type_prefix(chain_type)}|{design_tag}_{cid} "
-                    f"ca_dev={d['max_ca_deviation']:.2f} "
-                    f"breaks={d['n_chainbreaks']} "
-                    f"clashes={d['n_clashing']} "
-                    f"rg={d['radius_of_gyration']:.1f}"
-                )
+                header = f">{chain_type_prefix(chain_type)}|{design_tag}_{cid}"
                 f.write(f"{header}\n{seq}\n")
 
     # Combined FASTA at the root
@@ -1179,13 +1176,7 @@ def write_fasta(designs, output_dir, top_n=0):
                 continue
             design_tag = f"design_{rank:02d}"
             for cid, chain_type, seq in d["chains"]:
-                header = (
-                    f">{chain_type_prefix(chain_type)}|{design_tag}_{cid} "
-                    f"ca_dev={d['max_ca_deviation']:.2f} "
-                    f"breaks={d['n_chainbreaks']} "
-                    f"clashes={d['n_clashing']} "
-                    f"rg={d['radius_of_gyration']:.1f}"
-                )
+                header = f">{chain_type_prefix(chain_type)}|{design_tag}_{cid}"
                 f.write(f"{header}\n{seq}\n")
 
     n = len(ranked)
