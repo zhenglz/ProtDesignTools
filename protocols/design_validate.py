@@ -15,7 +15,7 @@ Usage:
     --num-rounds 3 --num-designs 50 --top-m 20 --top-k 5 --output ./results
 """
 
-import argparse, csv, os, sys, subprocess as sp, time
+import argparse, csv, os, sys, subprocess as sp, time, shutil
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -170,6 +170,7 @@ def run_chai1_batch(designs, fasta_dir, chai1_out, cfg, args):
             results.append({
                 'design_name': tag,
                 'orig_name': d['design_name'],
+                'best_model': scores.get('best_model', ''),
                 'plddt': scores.get('best_plddt', 0),
                 'ptm': scores.get('best_ptm', 0),
                 'iptm': scores.get('best_iptm', 0),
@@ -178,16 +179,113 @@ def run_chai1_batch(designs, fasta_dir, chai1_out, cfg, args):
     return results
 
 
-def write_final_results(results, output_dir):
-    """Save final top-K results to CSV and print summary."""
+def _cif_to_pdb(cif_path, pdb_path):
+    """Convert a CIF file to PDB format using BioPython."""
+    try:
+        from Bio.PDB import MMCIFParser, PDBIO
+        parser = MMCIFParser(QUIET=True)
+        structure = parser.get_structure("model", cif_path)
+        io = PDBIO()
+        io.set_structure(structure)
+        io.save(pdb_path)
+        return True
+    except ImportError:
+        print("  BioPython not available, copying CIF as-is instead")
+        shutil.copy2(cif_path, pdb_path)
+        return False
+    except Exception as e:
+        print(f"  CIF→PDB conversion failed: {e}")
+        return False
+
+
+def write_final_results(results, designs, output_dir, chai1_out):
+    """Save final top-K results: rename structures and write CSV with sequences.
+
+    For each top-K design:
+      1. Copies the best-model CIF from Chai-1 output, converting to PDB
+         with the naming scheme: rankNNN_{tag}_rf3_{orig_name}.pdb
+      2. Reads chain sequences from the design's unique FASTA
+      3. Writes everything to final_topk.csv with per-chain sequence columns
+
+    Args:
+        results: list of result dicts (sorted by combined score descending)
+        designs: list of design dicts (from deduplicate_designs, with _tag set)
+        output_dir: protocol output directory
+        chai1_out: Chai-1 prediction output directory
+    """
+    from design_utils import read_fasta_chains
+
+    top_k_dir = os.path.join(output_dir, 'topk_structures')
+    os.makedirs(top_k_dir, exist_ok=True)
+
+    # Lookup: design _tag → design dict
+    design_by_tag = {d.get('_tag'): d for d in designs if d.get('_tag')}
+
     csv_path = os.path.join(output_dir, 'final_topk.csv')
+
+    # Collect all chain IDs across top-K designs for CSV columns
+    all_chain_ids = OrderedDict()
+    for r in results:
+        tag = r['design_name']
+        d = design_by_tag.get(tag)
+        if d and d.get('_unique_fasta') and os.path.exists(d['_unique_fasta']):
+            chains = read_fasta_chains(d['_unique_fasta'])
+            for cid in chains:
+                all_chain_ids[cid] = None
+
+    # Build fieldnames
+    fieldnames = [
+        'rank', 'design_name', 'orig_name',
+        'best_model', 'plddt', 'ptm', 'iptm', 'combined',
+        'structure_file',
+    ]
+    for cid in all_chain_ids:
+        fieldnames.append(f'chain_{cid}')
+
     with open(csv_path, 'w', newline='') as f:
-        w = csv.writer(f)
-        w.writerow(['rank', 'design_name', 'orig_name', 'plddt', 'ptm', 'iptm', 'combined'])
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+
         for i, r in enumerate(results, 1):
-            w.writerow([i, r['design_name'], r.get('orig_name', ''),
-                        r['plddt'], r['ptm'], r['iptm'], r['combined']])
-    print(f'\nResults saved to {csv_path}')
+            tag = r['design_name']
+            orig_name = r.get('orig_name', '')
+            best_model = r.get('best_model', '')
+
+            # --- rename best-model structure ---
+            out_name = f"rank{i:03d}_{tag}_rf3_{orig_name}.pdb"
+            out_path = os.path.join(top_k_dir, out_name)
+
+            if best_model != '' and not os.path.exists(out_path):
+                cif_path = os.path.join(chai1_out, tag, f"pred.model_idx_{best_model}.cif")
+                if os.path.exists(cif_path):
+                    _cif_to_pdb(cif_path, out_path)
+
+            # --- read chain sequences from FASTA ---
+            chain_seqs = {}
+            d = design_by_tag.get(tag)
+            if d and d.get('_unique_fasta') and os.path.exists(d['_unique_fasta']):
+                chain_seqs = read_fasta_chains(d['_unique_fasta'])
+
+            # --- build CSV row ---
+            row = {
+                'rank': i,
+                'design_name': tag,
+                'orig_name': orig_name,
+                'best_model': best_model,
+                'plddt': f"{r['plddt']:.3f}" if r.get('plddt') else '',
+                'ptm': f"{r['ptm']:.4f}" if r.get('ptm') else '',
+                'iptm': f"{r['iptm']:.4f}" if r.get('iptm') else '',
+                'combined': f"{r['combined']:.3f}" if r.get('combined') else '',
+                'structure_file': out_name if os.path.exists(out_path) else '',
+            }
+            for cid in all_chain_ids:
+                row[f'chain_{cid}'] = chain_seqs.get(cid, '')
+
+            writer.writerow(row)
+
+    n = len(results)
+    print(f'\n[Phase 4] Top {n} structures saved to {top_k_dir}/')
+    print(f'  Results saved to {csv_path}')
 
 
 # ---------------------------------------------------------------------------
@@ -275,10 +373,9 @@ def main():
         print(f'  {i+1}. {r["design_name"]:30s} '
               f'pLDDT={r["plddt"]:.3f}  pTM={r["ptm"]:.3f}  iPTM={r["iptm"]:.3f}  '
               f'combined={r["combined"]:.3f}')
-        if r.get('orig_name'):
-            print(f'       (source: {r["orig_name"]})')
 
-    write_final_results(top_k, args.output)
+    chai1_out = os.path.join(args.output, 'chai1_preds')
+    write_final_results(top_k, top_m, args.output, chai1_out)
     print('\nDone.')
 
 
