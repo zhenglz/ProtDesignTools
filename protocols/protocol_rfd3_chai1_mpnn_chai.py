@@ -528,7 +528,7 @@ def run_mpnn_phase(top_structures, output_dir, cfg, args, design_regions):
 
     # MPNN config
     pkg_dpath = cfg['proteinmpnn']['package_dpath']
-    mpnn_python = f"{pkg_dpath}/../python_env/proteinmpnn/bin/python"
+    mpnn_python = os.path.realpath(f"{pkg_dpath}/../python_env/proteinmpnn/bin/python")
 
     # Designed chains
     designed_chains_set = sorted(set(r[0] for r in design_regions))
