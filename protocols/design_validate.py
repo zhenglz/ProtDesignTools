@@ -161,8 +161,10 @@ def run_chai1_batch(designs, fasta_dir, chai1_out, cfg, args):
             time.sleep(30)
 
     # Extract scores
+    n_total = len(designs)
+    print(f'  Extracting scores for {n_total} design(s)...')
     results = []
-    for d in designs:
+    for idx, d in enumerate(designs, 1):
         tag = d.get('_tag', d['design_name'])
         out_dir = os.path.join(chai1_out, tag)
         scores = extract_all_scores(tag, out_dir)
@@ -176,6 +178,8 @@ def run_chai1_batch(designs, fasta_dir, chai1_out, cfg, args):
                 'iptm': scores.get('best_iptm', 0),
                 'combined': scores.get('best_plddt', 0) * scores.get('best_iptm', 0),
             })
+        if idx % 50 == 0 or idx == n_total:
+            print(f'    [{time.strftime("%H:%M:%S")}] {idx}/{n_total} scores extracted')
     return results
 
 
