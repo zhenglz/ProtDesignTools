@@ -375,7 +375,7 @@ def write_final_results(all_results, designs, output_dir, chai1_out,
     # --- build lookup ---
     design_by_tag = {d.get('_tag'): d for d in designs if d.get('_tag')}
 
-    top_k_dir = os.path.join(output_dir, 'topk_structures')
+    top_k_dir = os.path.join(output_dir, 'final_results', 'topk_structures')
     os.makedirs(top_k_dir, exist_ok=True)
 
     # Collect chain IDs across top designs for CSV columns
@@ -396,7 +396,7 @@ def write_final_results(all_results, designs, output_dir, chai1_out,
     for cid in all_chain_ids:
         fieldnames.append(f'chain_{cid}')
 
-    csv_path = os.path.join(output_dir, 'final_topk.csv')
+    csv_path = os.path.join(output_dir, 'final_results', 'final_topk.csv')
     with open(csv_path, 'w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
@@ -459,7 +459,7 @@ def main():
     round_dirs = []
     rfd3_needed = []
     for r in range(1, args.num_rounds + 1):
-        rfd3_out = os.path.join(args.output, f'rfd3_round_{r}')
+        rfd3_out = os.path.join(args.output, 'step1_rfd3', f'round_{r}')
         scores_csv = os.path.join(rfd3_out, 'rfd3_scores.csv')
         if args.skip_existing and os.path.exists(scores_csv):
             print(f'[Phase 1] Skipping round {r}/{args.num_rounds} — already completed')
@@ -516,15 +516,15 @@ def main():
 
     # Write unique FASTA files for Chai-1
     unique_fasta_dir = write_unique_fastas(top_m,
-                                           os.path.join(args.output, 'unique_designs'))
+                                           os.path.join(args.output, 'step1_rfd3', 'unique_designs'))
 
     # Phase 3: Chai-1 prediction
     results = run_chai1_batch(top_m, unique_fasta_dir,
-                              os.path.join(args.output, 'chai1_preds'),
+                              os.path.join(args.output, 'step2_chai1'),
                               cfg, args)
 
     # Phase 4: Final ranking (weighted score with helicity)
-    chai1_out = os.path.join(args.output, 'chai1_preds')
+    chai1_out = os.path.join(args.output, 'step2_chai1')
     designed_chains = get_designed_chain_ids(chain_meta)
     python_exe = cfg.get('esmif', {}).get('python_executable')  # sfct env with mdtraj
     write_final_results(results, top_m, args.output, chai1_out,
