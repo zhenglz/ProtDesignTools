@@ -27,6 +27,7 @@ from chai1_tool import submit_chai1_slurm, check_job_status, extract_all_scores
 from design_utils import (
     composite_rank, collect_designs_from_rounds,
     deduplicate_designs, write_unique_fastas,
+    get_designed_chain_ids,
 )
 
 RFD3_SCRIPT = str(REPO_ROOT / 'tools' / 'rfdiffusion3_tool.py')
@@ -61,6 +62,9 @@ def parse_args():
     p.add_argument('--config', help='Path to config JSON')
     p.add_argument('--skip-existing', action='store_true',
                    help='Skip phases where output files already exist')
+    p.add_argument('--weights', default='plddt:1;iptm:1;helicity:1',
+                   help='Weighted ranking metrics and weights, semicolon-separated '
+                        '(default: plddt:1;iptm:1;helicity:1)')
     return p.parse_args()
 
 
@@ -203,34 +207,180 @@ def _cif_to_pdb(cif_path, pdb_path):
         return False
 
 
-def write_final_results(results, designs, output_dir, chai1_out):
-    """Save final top-K results: rename structures and write CSV with sequences.
+def calc_helicity(cif_path, designed_chains, python_exe=None):
+    """Calculate alpha-helix fraction for designed chains using mdtraj DSSP.
 
-    For each top-K design:
-      1. Copies the best-model CIF from Chai-1 output, converting to PDB
-         with the naming scheme: rankNNN_{tag}_rf3_{orig_name}.pdb
-      2. Reads chain sequences from the design's unique FASTA
-      3. Writes everything to final_topk.csv with per-chain sequence columns
+    Tries direct ``import mdtraj`` first.  If unavailable, falls back
+    to calling *python_exe* (e.g. the sfct conda environment) as a
+    subprocess.  As a last resort uses a BioPython CA-distance heuristic.
 
     Args:
-        results: list of result dicts (sorted by combined score descending)
-        designs: list of design dicts (from deduplicate_designs, with _tag set)
+        cif_path: Path to the CIF structure file.
+        designed_chains: Set of chain IDs (e.g. {'C'}) to measure.
+        python_exe: Optional path to a Python with mdtraj installed.
+
+    Returns:
+        Float in [0, 1], or 0.0 on total failure.
+    """
+    # --- attempt 1: direct import ---
+    try:
+        import mdtraj as md
+        return _helicity_mdtraj(cif_path, designed_chains, md)
+    except ImportError:
+        pass
+
+    # --- attempt 2: subprocess via python_exe (e.g. sfct env) ---
+    if python_exe and os.path.exists(python_exe):
+        try:
+            return _helicity_subprocess(cif_path, designed_chains, python_exe)
+        except Exception:
+            pass
+
+    # --- attempt 3: BioPython fallback ---
+    try:
+        from Bio.PDB import MMCIFParser
+        return _helicity_biopython(cif_path, designed_chains, MMCIFParser)
+    except ImportError:
+        pass
+
+    return 0.0
+
+
+def _helicity_mdtraj(cif_path, designed_chains, md):
+    """mdtraj DSSP-based helicity for designed chains."""
+    traj = md.load(cif_path)
+    dssp_per_res = md.compute_dssp(traj, simplified=True)[0]
+    topology = traj.topology
+    n_helix = n_total = 0
+    for res in topology.residues:
+        cid = str(res.chain.chain_id)
+        if cid not in designed_chains:
+            continue
+        n_total += 1
+        if dssp_per_res[res.index] == 'H':
+            n_helix += 1
+    return n_helix / n_total if n_total else 0.0
+
+
+def _helicity_subprocess(cif_path, designed_chains, python_exe):
+    """Run mdtraj DSSP in a subprocess using a dedicated python."""
+    import json, textwrap
+    code = textwrap.dedent(f"""\
+        import mdtraj as md, json, sys
+        traj = md.load({json.dumps(cif_path)})
+        dssp = md.compute_dssp(traj, simplified=True)[0]
+        top = traj.topology
+        designed = {json.dumps(sorted(designed_chains))}
+        n_helix = n_total = 0
+        for res in top.residues:
+            cid = str(res.chain.chain_id)
+            if cid not in designed:
+                continue
+            n_total += 1
+            if dssp[res.index] == 'H':
+                n_helix += 1
+        print(n_helix / n_total if n_total else 0.0)
+    """)
+    result = sp.run([python_exe, '-c', code],
+                    stdout=sp.PIPE, stderr=sp.PIPE,
+                    universal_newlines=True, timeout=120)
+    if result.returncode == 0 and result.stdout.strip():
+        return float(result.stdout.strip())
+    raise RuntimeError(f"subprocess failed: {result.stderr}")
+
+
+def _helicity_biopython(cif_path, designed_chains, MMCIFParser):
+    """CA-CA[i+4] distance heuristic for designed chains."""
+    parser = MMCIFParser(QUIET=True)
+    structure = parser.get_structure("model", cif_path)
+    n_helix = n_total = 0
+    for model in structure:
+        for chain in model:
+            if chain.id not in designed_chains:
+                continue
+            residues = [r for r in chain if r.id[0] == ' ']
+            for i, res in enumerate(residues):
+                n_total += 1
+                if i + 4 >= len(residues):
+                    continue
+                try:
+                    ca_i = res['CA'].get_vector()
+                    ca_i4 = residues[i + 4]['CA'].get_vector()
+                    if (ca_i - ca_i4).norm() < 7.0:
+                        n_helix += 1
+                except (KeyError, IndexError):
+                    continue
+    return n_helix / n_total if n_total else 0.0
+
+
+def write_final_results(all_results, designs, output_dir, chai1_out,
+                        top_k, weights_str, designed_chains=None, python_exe=None):
+    """Rank all results by weighted score, select top K, rename structures,
+    write CSV with scores, helicity, and chain sequences.
+
+    Args:
+        all_results: list of result dicts from run_chai1_batch
+        designs: list of design dicts (from deduplicate_designs, with _tag)
         output_dir: protocol output directory
         chai1_out: Chai-1 prediction output directory
+        top_k: number of top designs to keep
+        weights_str: weighting spec, e.g. "plddt:1;iptm:1;helicity:1"
     """
     from design_utils import read_fasta_chains
+
+    # --- parse weights ---
+    weights = {}
+    for token in weights_str.replace(',', ';').split(';'):
+        token = token.strip()
+        if not token:
+            continue
+        parts = token.split(':')
+        if len(parts) == 2:
+            key, val = parts[0].strip().lower(), float(parts[1])
+            if val != 0:
+                weights[key] = val
+    if not weights:
+        weights = {'plddt': 1.0, 'iptm': 1.0, 'helicity': 1.0}
+    norm = sum(weights.values())
+
+    # --- calculate helicity and weighted score for every result ---
+    for r in all_results:
+        tag = r['design_name']
+        # Read helicity from best-model CIF
+        helicity = 0.0
+        bm = r.get('best_model', '')
+        if bm != '':
+            cif_path = os.path.join(chai1_out, tag, f"pred.model_idx_{bm}.cif")
+            if os.path.exists(cif_path):
+                helicity = calc_helicity(cif_path, designed_chains or set(), python_exe)
+        r['helicity'] = helicity
+
+        # Weighted combined score (normalised)
+        wscore = 0.0
+        for key, w in weights.items():
+            if key == 'plddt':
+                wscore += w * r.get('plddt', 0)
+            elif key == 'iptm':
+                wscore += w * (r.get('iptm', 0) * 100)  # iptm 0-1 scale → percentage
+            elif key == 'helicity':
+                wscore += w * (helicity * 100)  # helicity 0-1 → percentage
+            elif key == 'ptm':
+                wscore += w * (r.get('ptm', 0) * 100)
+        r['weighted_score'] = wscore / norm if norm else 0
+
+    # --- rank by weighted score, select top K ---
+    all_results.sort(key=lambda r: r['weighted_score'], reverse=True)
+    top = all_results[:top_k]
+
+    # --- build lookup ---
+    design_by_tag = {d.get('_tag'): d for d in designs if d.get('_tag')}
 
     top_k_dir = os.path.join(output_dir, 'topk_structures')
     os.makedirs(top_k_dir, exist_ok=True)
 
-    # Lookup: design _tag → design dict
-    design_by_tag = {d.get('_tag'): d for d in designs if d.get('_tag')}
-
-    csv_path = os.path.join(output_dir, 'final_topk.csv')
-
-    # Collect all chain IDs across top-K designs for CSV columns
+    # Collect chain IDs across top designs for CSV columns
     all_chain_ids = OrderedDict()
-    for r in results:
+    for r in top:
         tag = r['design_name']
         d = design_by_tag.get(tag)
         if d and d.get('_unique_fasta') and os.path.exists(d['_unique_fasta']):
@@ -238,59 +388,63 @@ def write_final_results(results, designs, output_dir, chai1_out):
             for cid in chains:
                 all_chain_ids[cid] = None
 
-    # Build fieldnames
     fieldnames = [
         'rank', 'design_name', 'orig_name',
-        'best_model', 'plddt', 'ptm', 'iptm', 'combined',
-        'structure_file',
+        'best_model', 'plddt', 'ptm', 'iptm', 'helicity',
+        'weighted_score', 'structure_file',
     ]
     for cid in all_chain_ids:
         fieldnames.append(f'chain_{cid}')
 
+    csv_path = os.path.join(output_dir, 'final_topk.csv')
     with open(csv_path, 'w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
 
-        for i, r in enumerate(results, 1):
+        for i, r in enumerate(top, 1):
             tag = r['design_name']
             orig_name = r.get('orig_name', '')
-            best_model = r.get('best_model', '')
+            bm = r.get('best_model', '')
 
             # --- rename best-model structure ---
             out_name = f"rank{i:03d}_{tag}_rf3_{orig_name}.pdb"
             out_path = os.path.join(top_k_dir, out_name)
-
-            if best_model != '' and not os.path.exists(out_path):
-                cif_path = os.path.join(chai1_out, tag, f"pred.model_idx_{best_model}.cif")
+            if bm != '' and not os.path.exists(out_path):
+                cif_path = os.path.join(chai1_out, tag, f"pred.model_idx_{bm}.cif")
                 if os.path.exists(cif_path):
                     _cif_to_pdb(cif_path, out_path)
 
-            # --- read chain sequences from FASTA ---
+            # --- read chain sequences ---
             chain_seqs = {}
             d = design_by_tag.get(tag)
             if d and d.get('_unique_fasta') and os.path.exists(d['_unique_fasta']):
                 chain_seqs = read_fasta_chains(d['_unique_fasta'])
 
-            # --- build CSV row ---
             row = {
                 'rank': i,
                 'design_name': tag,
                 'orig_name': orig_name,
-                'best_model': best_model,
+                'best_model': bm,
                 'plddt': f"{r['plddt']:.3f}" if r.get('plddt') else '',
                 'ptm': f"{r['ptm']:.4f}" if r.get('ptm') else '',
                 'iptm': f"{r['iptm']:.4f}" if r.get('iptm') else '',
-                'combined': f"{r['combined']:.3f}" if r.get('combined') else '',
+                'helicity': f"{r['helicity']:.4f}",
+                'weighted_score': f"{r['weighted_score']:.3f}",
                 'structure_file': out_name if os.path.exists(out_path) else '',
             }
             for cid in all_chain_ids:
                 row[f'chain_{cid}'] = chain_seqs.get(cid, '')
-
             writer.writerow(row)
 
-    n = len(results)
-    print(f'\n[Phase 4] Top {n} structures saved to {top_k_dir}/')
-    print(f'  Results saved to {csv_path}')
+    # --- print summary ---
+    print(f'\n[Phase 4] Top {len(top)} final designs (weighted by {weights_str}):')
+    for i, r in enumerate(top, 1):
+        print(f'  {i}. {r["design_name"]:30s}  '
+              f'pLDDT={r["plddt"]:.3f}  iPTM={r["iptm"]:.4f}  '
+              f'helicity={r["helicity"]:.3f}  '
+              f'score={r["weighted_score"]:.3f}')
+    print(f'\n  Structures: {top_k_dir}/')
+    print(f'  CSV: {csv_path}')
 
 
 # ---------------------------------------------------------------------------
@@ -369,18 +523,13 @@ def main():
                               os.path.join(args.output, 'chai1_preds'),
                               cfg, args)
 
-    # Phase 4: Final ranking
-    results.sort(key=lambda r: r['combined'], reverse=True)
-    top_k = results[:args.top_k]
-
-    print(f'\n[Phase 4] Top {len(top_k)} final designs:')
-    for i, r in enumerate(top_k):
-        print(f'  {i+1}. {r["design_name"]:30s} '
-              f'pLDDT={r["plddt"]:.3f}  pTM={r["ptm"]:.3f}  iPTM={r["iptm"]:.3f}  '
-              f'combined={r["combined"]:.3f}')
-
+    # Phase 4: Final ranking (weighted score with helicity)
     chai1_out = os.path.join(args.output, 'chai1_preds')
-    write_final_results(top_k, top_m, args.output, chai1_out)
+    designed_chains = get_designed_chain_ids(chain_meta)
+    python_exe = cfg.get('esmif', {}).get('python_executable')  # sfct env with mdtraj
+    write_final_results(results, top_m, args.output, chai1_out,
+                        args.top_k, args.weights,
+                        designed_chains=designed_chains, python_exe=python_exe)
     print('\nDone.')
 
 
