@@ -316,10 +316,22 @@ def run_design(pdb_fpath, positions, exclude_positions, output_dir, num_seqs=100
     # Parse positions
     design_res_dict, fix_res_dict = parse_residues(positions, exclude_positions, pdb_fpath)
 
-    # Prepare fixed positions list
+    # Only include chains that have designed positions
+    design_chains = sorted(design_res_dict.keys())
+    if not design_chains:
+        print("[ERROR] No chains with design positions found.")
+        return False
+
+    # Fixed positions list only for designed chains
     fix_res_list = []
-    for chain in fix_res_dict.keys():
-        fix_res_list.append(" ".join([str(x) for x in fix_res_dict[chain]]))
+    for chain in design_chains:
+        if chain in fix_res_dict:
+            fix_res_list.append(" ".join([str(x) for x in fix_res_dict[chain]]))
+        else:
+            fix_res_list.append("")
+
+    chains_to_design_str = " ".join(design_chains)
+    fixed_positions_str = ",".join(fix_res_list)
 
     # Create run script
     script_path = os.path.join(output_dir, 'run_design.sh')
@@ -334,10 +346,10 @@ path_for_parsed_chains=$output_dir/parsed_pdbs.jsonl
 path_for_assigned_chains=$output_dir/assigned_pdbs.jsonl
 path_for_fixed_positions=$output_dir/fixed_pdbs.jsonl
 
-chains_to_design="{" ".join(list(fix_res_dict.keys()))}"
+chains_to_design="{chains_to_design_str}"
 
 # define fixed residues
-fixed_positions="{",".join(fix_res_list)}"
+fixed_positions="{fixed_positions_str}"
 
 {python_exe} {package_dpath}/vanilla_proteinmpnn/helper_scripts/parse_multiple_chains.py \\
              --input_path=$folder_with_pdbs \\
