@@ -163,10 +163,14 @@ def parse_weights(weights_str):
 # ---------------------------------------------------------------------------
 
 def parse_design_regions(spec):
-    """Parse 'C820-831:5-15' into [(chain, start, end), ...]."""
+    """Parse 'C820-831:5-15' into [(chain, start, end), ...].
+    Accepts both ';' and ',' as region separators."""
     regions = []
-    for part in spec.split(';'):
-        m = re.match(r'^([A-Za-z])(\d+)-(\d+):(\d+)-(\d+)$', part.strip())
+    for part in re.split(r'[;,]', spec):
+        part = part.strip()
+        if not part:
+            continue
+        m = re.match(r'^([A-Za-z])(\d+)-(\d+):(\d+)-(\d+)$', part)
         if not m:
             raise ValueError(f"Cannot parse region: '{part}'")
         regions.append((m.group(1), int(m.group(2)), int(m.group(3))))
