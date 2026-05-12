@@ -685,29 +685,32 @@ def run_mpnn_phase(top_structures, output_dir, cfg, args, design_regions, input_
             mpnn_tag = f"{tag}_mpnn{mpnn_idx:03d}"
             design_seq_raw = row['sequence']
 
-            # Clean separators that MPNN may insert between chains
-            design_seq_full = design_seq_raw.replace(':', '').replace('/', '')
-            design_len = len(design_seq_full)
+            # MPNN output uses '/' to separate chain sequences (e.g. "chainA/chainB/chainC")
+            design_chain_seqs = design_seq_raw.split('/')
+            design_len = len(design_chain_seqs)
 
-            if design_len == full_wt_len:
-                # Full multi-chain output — find all mutations by position
-                new_seqs = OrderedDict(all_chain_seqs)
+            if design_len == len(all_chain_seqs):
+                # Multi-chain output — each chain's sequence is at the corresponding index.
+                # all_chain_seqs is OrderedDict in same order as the MPNN output.
+                new_seqs = OrderedDict()
                 n_mut = 0
-                for ch in new_seqs:
-                    ch_len = len(new_seqs[ch])
-                    ch_off = chain_offsets[ch]
-                    seq_list = list(new_seqs[ch])
-                    for rel_pos in range(ch_len):
-                        fp = ch_off + rel_pos
-                        if fp < design_len and design_seq_full[fp] != full_wt_seq[fp]:
-                            seq_list[rel_pos] = design_seq_full[fp]
-                            n_mut += 1
-                    new_seqs[ch] = ''.join(seq_list)
+                for ch_idx, (ch, wt_ch_seq) in enumerate(all_chain_seqs.items()):
+                    if ch_idx < len(design_chain_seqs):
+                        designed = design_chain_seqs[ch_idx]
+                        if len(designed) == len(wt_ch_seq):
+                            n_chain_mut = sum(1 for a, b in zip(wt_ch_seq, designed) if a != b)
+                            n_mut += n_chain_mut
+                            new_seqs[ch] = designed
+                        else:
+                            new_seqs[ch] = wt_ch_seq
+                    else:
+                        new_seqs[ch] = wt_ch_seq
                 mutations_found = n_mut > 0
                 # Start from original PDB sequences, overlay designed chains
                 full_fasta_seqs = OrderedDict()
                 for ch, seq in orig_chain_seqs.items():
                     full_fasta_seqs[ch] = new_seqs.get(ch, seq)
+                n_mutations_val = n_mut
             else:
                 # Only designed-chain output — use mutation approach
                 mutations = find_mutations(wt_seq, design_seq_raw)
@@ -723,6 +726,7 @@ def run_mpnn_phase(top_structures, output_dir, cfg, args, design_regions, input_
                 for ch, seq in orig_chain_seqs.items():
                     full_fasta_seqs[ch] = new_chain_seqs.get(ch, seq)
                 mutations_found = bool(mutations)
+                n_mutations_val = len(mutations) if mutations else 0
 
             if not mutations_found and mpnn_idx > 0:
                 continue  # skip identical sequences (keep first = best)
@@ -736,8 +740,7 @@ def run_mpnn_phase(top_structures, output_dir, cfg, args, design_regions, input_
                 'mpnn_score': row['score'],
                 'mpnn_recovery': row['recovery'],
                 'design_seq': design_seq_raw,
-                'n_mutations': sum(1 for a, b in zip(full_wt_seq, design_seq_full) if a != b)
-                               if design_len == full_wt_len else 0,
+                'n_mutations': n_mutations_val,
                 'fasta_content': fasta_content,
                 'plddt': struct.get('plddt', 0),
                 'iptm': struct.get('iptm', 0),
