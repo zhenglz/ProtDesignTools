@@ -261,7 +261,9 @@ def parse_residues(design_positions_str, exclude_positions_str, pdb_fpath):
         else:
             fix_res_dict[chain].append(idx)
 
-    return design_res_dict, fix_res_dict
+    # Return all chain IDs found in the PDB (needed for run_design to include non-designed chains)
+    all_chain_list = sorted(set(c for _, c in all_res))
+    return design_res_dict, fix_res_dict, pdb_to_seq, all_chain_list
 
 
 def create_fasta_file(seq_str, output_dir):
@@ -332,7 +334,7 @@ def run_design(pdb_fpath, positions, exclude_positions, output_dir, num_seqs=100
     shutil.copy(pdb_fpath, os.path.join(input_dir, 'protein.pdb'))
 
     # Parse positions
-    design_res_dict, fix_res_dict = parse_residues(positions, exclude_positions, pdb_fpath)
+    design_res_dict, fix_res_dict, pdb_to_seq, all_chain_list = parse_residues(positions, exclude_positions, pdb_fpath)
 
     # Only include chains that have designed positions
     design_chains = sorted(design_res_dict.keys())
@@ -340,16 +342,21 @@ def run_design(pdb_fpath, positions, exclude_positions, output_dir, num_seqs=100
         print("[ERROR] No chains with design positions found.")
         return False
 
-    # Fixed positions list only for designed chains
-    fix_res_list = []
-    for chain in design_chains:
+    # Include ALL chains in the design list: designed chains get partial fixed positions,
+    # non-designed chains get ALL residues fixed so MPNN outputs them as-is.
+    chains_to_design_str = " ".join(all_chain_list)
+    fix_res_groups = []
+    for chain in all_chain_list:
         if chain in fix_res_dict:
-            fix_res_list.append(" ".join([str(x) for x in fix_res_dict[chain]]))
+            # Chain has some designed and some fixed residues
+            fix_res_groups.append(" ".join([str(x) for x in fix_res_dict[chain]]))
+        elif chain in pdb_to_seq:
+            # Non-designed chain: ALL residues are fixed
+            seq_indices = sorted(pdb_to_seq[chain].values())
+            fix_res_groups.append(" ".join(str(x) for x in seq_indices))
         else:
-            fix_res_list.append("")
-
-    chains_to_design_str = " ".join(design_chains)
-    fixed_positions_str = ",".join(fix_res_list)
+            fix_res_groups.append("")
+    fixed_positions_str = ",".join(fix_res_groups)
 
     # Create run script
     script_path = os.path.join(output_dir, 'run_design.sh')
