@@ -228,16 +228,34 @@ def parse_residues(design_positions_str, exclude_positions_str, pdb_fpath):
     # Calculate fixed residues (all residues not in design_res, plus excluded residues)
     fix_res = [x for x in all_res if x not in design_res]
 
+    # Build PDB-residue-number to sequential-1-based-index mapping per chain
+    # make_fixed_positions_dict.py expects indices 1,2,3... per chain, not PDB numbers
+    pdb_to_seq = {}
+    for chain in sorted(set(c for _, c in all_res)):
+        chain_res = sorted(set(r for r, c in all_res if c == chain))
+        pdb_to_seq[chain] = {pdb_num: i + 1 for i, pdb_num in enumerate(chain_res)}
+
+    # Convert design and fixed residues from PDB numbers to sequential indices
+    design_res_seq = []
+    for (idx, chain) in design_res:
+        if chain in pdb_to_seq and idx in pdb_to_seq[chain]:
+            design_res_seq.append((pdb_to_seq[chain][idx], chain))
+
+    fix_res_seq = []
+    for (idx, chain) in fix_res:
+        if chain in pdb_to_seq and idx in pdb_to_seq[chain]:
+            fix_res_seq.append((pdb_to_seq[chain][idx], chain))
+
     # Convert to dict format
     design_res_dict = {}
-    for (idx, chain) in design_res:
+    for (idx, chain) in design_res_seq:
         if chain not in design_res_dict:
             design_res_dict[chain] = [idx]
         else:
             design_res_dict[chain].append(idx)
 
     fix_res_dict = {}
-    for (idx, chain) in fix_res:
+    for (idx, chain) in fix_res_seq:
         if chain not in fix_res_dict:
             fix_res_dict[chain] = [idx]
         else:

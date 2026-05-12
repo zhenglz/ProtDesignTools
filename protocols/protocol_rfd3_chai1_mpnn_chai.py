@@ -510,7 +510,7 @@ def rank_and_save_step2(results, designs, output_dir, chai1_out,
 # Phase 3: ProteinMPNN design
 # ---------------------------------------------------------------------------
 
-def run_mpnn_phase(top_structures, output_dir, cfg, args, design_regions):
+def run_mpnn_phase(top_structures, output_dir, cfg, args, design_regions, input_pdb):
     """Run ProteinMPNN on top structures from step 2.
 
     Args:
@@ -519,6 +519,7 @@ def run_mpnn_phase(top_structures, output_dir, cfg, args, design_regions):
         cfg: config dict
         args: CLI args
         design_regions: list of (chain, start, end) tuples
+        input_pdb: path to the original input PDB
 
     Returns:
         List of dicts with MPNN design results (tag, mpnn_tag, fasta_content, mpnn_score, ...)
@@ -533,9 +534,18 @@ def run_mpnn_phase(top_structures, output_dir, cfg, args, design_regions):
     # Designed chains
     designed_chains_set = sorted(set(r[0] for r in design_regions))
 
-    # MPNN position string
-    mpnn_positions = design_regions_to_mpnn_positions(design_regions)
-    print(f'  MPNN design positions: {mpnn_positions}')
+    # Read original PDB to get starting residue number for each chain
+    orig_first_res = {}
+    with open(input_pdb) as fh:
+        for line in fh:
+            if line.startswith('ATOM'):
+                cid = line[21]
+                if cid in designed_chains_set and cid not in orig_first_res:
+                    orig_first_res[cid] = int(line[22:26].strip())
+
+    # Read all chain sequences from the ORIGINAL input PDB
+    # These provide the non-designed chain sequences for the Chai-1 FASTA
+    orig_chain_seqs = get_all_chain_seqs(input_pdb)
 
     all_mpnn_designs = []
 
@@ -556,6 +566,57 @@ def run_mpnn_phase(top_structures, output_dir, cfg, args, design_regions):
                 print(f'  SKIP {tag}: CIF->PDB failed')
                 continue
 
+        # Read actual residue numbers from the MPNN PDB for designed chains
+        pdb_chain_residues = {}
+        with open(pdb_file) as fh:
+            for line in fh:
+                if line.startswith('ATOM'):
+                    cid = line[21]
+                    if cid in designed_chains_set:
+                        res_idx = int(line[22:26].strip())
+                        if cid not in pdb_chain_residues:
+                            pdb_chain_residues[cid] = set()
+                        pdb_chain_residues[cid].add(res_idx)
+
+        # Map design regions to actual PDB numbering using offset
+        # offset = original_first_residue - pdb_first_residue
+        mpnn_positions_parts = []
+        designed_positions_pdb = set()
+        for chain, start, end in design_regions:
+            if chain in pdb_chain_residues and chain in orig_first_res:
+                pdb_residues = sorted(pdb_chain_residues[chain])
+                pdb_first = pdb_residues[0]
+                offset = orig_first_res[chain] - pdb_first
+                mapped_start = start - offset
+                mapped_end = end - offset
+                # Clamp to actual PDB range
+                pdb_last = pdb_residues[-1]
+                mapped_start = max(mapped_start, pdb_first)
+                mapped_end = min(mapped_end, pdb_last)
+                if mapped_start <= mapped_end:
+                    mpnn_positions_parts.append(f"{mapped_start}{chain}-{mapped_end}{chain}")
+                    for r in range(mapped_start, mapped_end + 1):
+                        designed_positions_pdb.add(r)
+            else:
+                print(f'  WARNING: chain {chain} not found in MPNN PDB, using original numbering')
+                mpnn_positions_parts.append(f"{start}{chain}-{end}{chain}")
+                # Don't add to designed_positions_pdb — the original PDB numbers
+                # won't match the Chai-1 predicted PDB numbering used in the
+                # exclude loop below. Leave empty so exclude_str stays None.
+
+        mpnn_positions = ','.join(mpnn_positions_parts) if mpnn_positions_parts else ''
+        if not mpnn_positions:
+            # Fallback: design all residues on designed chains
+            print(f'  WARNING: could not map design regions for {tag}, designing all residues')
+            fallback_parts = []
+            for ch in designed_chains_set:
+                if ch in pdb_chain_residues:
+                    res = sorted(pdb_chain_residues[ch])
+                    fallback_parts.append(f"{res[0]}{ch}-{res[-1]}{ch}")
+            mpnn_positions = ','.join(fallback_parts)
+
+        print(f'  MPNN design positions: {mpnn_positions}')
+
         # Get original sequences for all chains (needed for Chai-1 FASTA)
         all_chain_seqs = get_all_chain_seqs(pdb_file)
         if not all_chain_seqs:
@@ -574,33 +635,15 @@ def run_mpnn_phase(top_structures, output_dir, cfg, args, design_regions):
 
         # Build MPNN exclude list: if not designing unfixed, keep all non-region positions fixed
         exclude_str = None
-        if not args.mpnn_design_unfixed:
-            # Calculate all residue positions NOT in design regions
-            all_residues = []
-            with open(pdb_file) as fh:
-                for line in fh:
-                    if line.startswith('ATOM'):
-                        res_idx = int(line[22:26].strip())
-                        chain_id = line[21]
-                        all_residues.append((res_idx, chain_id))
-            # Deduplicate
-            all_residues = list(OrderedDict.fromkeys(all_residues))
-
-            # Build set of designed positions
-            designed_positions = set()
-            for chain, start, end in design_regions:
-                for r in range(start, end + 1):
-                    designed_positions.add((r, chain))
-
-            # Fixed = all residues not in designed positions
+        if not args.mpnn_design_unfixed and designed_positions_pdb:
+            # All residues on designed chains NOT in the design region
             fixed_parts = []
-            for res_idx, chain_id in all_residues:
-                if (res_idx, chain_id) not in designed_positions:
-                    fixed_parts.append(f"{res_idx}{chain_id}")
+            for ch in designed_chains_set:
+                if ch in pdb_chain_residues:
+                    for r in sorted(pdb_chain_residues[ch]):
+                        if r not in designed_positions_pdb:
+                            fixed_parts.append(f"{r}{ch}")
             exclude_str = ','.join(fixed_parts) if fixed_parts else None
-        else:
-            # Designing all residues in the PDB — no exclude needed
-            pass
 
         print(f'\n  [{rank_idx}] {tag}: running ProteinMPNN (pLDDT={struct.get("plddt",0):.3f})')
         if exclude_str:
@@ -661,7 +704,10 @@ def run_mpnn_phase(top_structures, output_dir, cfg, args, design_regions):
                             n_mut += 1
                     new_seqs[ch] = ''.join(seq_list)
                 mutations_found = n_mut > 0
-                full_fasta_seqs = new_seqs
+                # Start from original PDB sequences, overlay designed chains
+                full_fasta_seqs = OrderedDict()
+                for ch, seq in orig_chain_seqs.items():
+                    full_fasta_seqs[ch] = new_seqs.get(ch, seq)
             else:
                 # Only designed-chain output — use mutation approach
                 mutations = find_mutations(wt_seq, design_seq_raw)
@@ -674,7 +720,7 @@ def run_mpnn_phase(top_structures, output_dir, cfg, args, design_regions):
                     mutations,
                 )
                 full_fasta_seqs = OrderedDict()
-                for ch, seq in all_chain_seqs.items():
+                for ch, seq in orig_chain_seqs.items():
                     full_fasta_seqs[ch] = new_chain_seqs.get(ch, seq)
                 mutations_found = bool(mutations)
 
@@ -1095,7 +1141,7 @@ def main():
     # ==================================================================
     print('\n[Step 3] ProteinMPNN sequence design')
     mpnn_designs = run_mpnn_phase(
-        step2_top, args.output, cfg, args, design_regions)
+        step2_top, args.output, cfg, args, design_regions, args.pdb)
 
     if not mpnn_designs:
         print('No MPNN designs generated. Exiting.')
